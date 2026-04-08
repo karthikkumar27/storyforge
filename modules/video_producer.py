@@ -1,4 +1,5 @@
 import os
+import shutil
 import time
 import subprocess
 import tempfile
@@ -59,7 +60,7 @@ class VideoProducer:
         with httpx.stream("GET", url, timeout=120) as resp:
             resp.raise_for_status()
             with open(path, "wb") as f:
-                for chunk in resp.iter_bytes():
+                for chunk in resp.iter_bytes(chunk_size=65536):
                     f.write(chunk)
 
     def _stitch(self, clip_paths: list[str], output_path: str) -> None:
@@ -76,13 +77,17 @@ class VideoProducer:
 
     def produce(self, shots: list[str]) -> str:
         workdir = tempfile.mkdtemp(prefix="cinematic_")
-        clip_paths = []
-        for i, prompt in enumerate(shots):
-            task_id = self._submit_shot(prompt)
-            video_url = self._poll_shot(task_id)
-            clip_path = os.path.join(workdir, f"shot_{i:02d}.mp4")
-            self._download_clip(video_url, clip_path)
-            clip_paths.append(clip_path)
-        output_path = os.path.join(workdir, "stitched.mp4")
-        self._stitch(clip_paths, output_path)
-        return output_path
+        try:
+            clip_paths = []
+            for i, prompt in enumerate(shots):
+                task_id = self._submit_shot(prompt)
+                video_url = self._poll_shot(task_id)
+                clip_path = os.path.join(workdir, f"shot_{i:02d}.mp4")
+                self._download_clip(video_url, clip_path)
+                clip_paths.append(clip_path)
+            output_path = os.path.join(workdir, "stitched.mp4")
+            self._stitch(clip_paths, output_path)
+            return output_path
+        except Exception:
+            shutil.rmtree(workdir, ignore_errors=True)
+            raise

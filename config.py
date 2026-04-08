@@ -1,7 +1,7 @@
 # Kling AI
 KLING_BASE_URL = "https://api.klingai.com"
 KLING_MODEL = "kling-v1"
-SHOT_DURATION = "10"
+SHOT_DURATION = 10
 ASPECT_RATIO = "16:9"
 SHOTS_COUNT = 7
 POLL_INTERVAL_SEC = 10
