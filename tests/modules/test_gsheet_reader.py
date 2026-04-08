@@ -81,3 +81,31 @@ def test_update_status_writes_correct_cell(mock_gspread, monkeypatch):
     reader.update_status(2, "generating")
 
     mock_sheet.update_cell.assert_called_with(2, 6, "generating")  # status is col 6
+
+
+@patch("modules.gsheet_reader.gspread")
+def test_append_pending_row_writes_correct_fields(mock_gspread, monkeypatch):
+    import json
+    monkeypatch.setenv("GOOGLE_SHEETS_CREDENTIALS", json.dumps({"type": "service_account"}))
+    monkeypatch.setenv("GOOGLE_SHEET_ID", "sheet123")
+
+    mock_sheet = MagicMock()
+    mock_sheet.row_values.return_value = [
+        "title", "story_brief", "script_text", "genre", "duration_sec",
+        "status", "youtube_url", "error_msg"
+    ]
+    mock_gspread.service_account_from_dict.return_value.open_by_key.return_value.sheet1 = mock_sheet
+
+    from modules.gsheet_reader import GSheetReader
+    reader = GSheetReader()
+    reader.append_pending_row({
+        "story_brief": "A ghost in the machine",
+        "genre": "sci-fi",
+        "title_hint": "Static",
+    })
+
+    appended = mock_sheet.append_row.call_args[0][0]
+    assert appended[1] == "A ghost in the machine"   # story_brief col
+    assert appended[3] == "sci-fi"                    # genre col
+    assert appended[5] == "pending"                   # status col
+    assert appended[4] == 75                          # duration_sec col

@@ -1,4 +1,5 @@
 from modules.gsheet_reader import GSheetReader
+from modules.brief_generator import BriefGenerator
 from modules.script_generator import ScriptGenerator
 from modules.video_producer import VideoProducer
 from modules.audio_mixer import AudioMixer
@@ -8,6 +9,12 @@ from modules.youtube_uploader import YouTubeUploader
 def run_pipeline() -> dict:
     reader = GSheetReader()
     row = reader.get_pending_row()
+
+    if not row:
+        brief_data = BriefGenerator().generate()
+        reader.append_pending_row(brief_data)
+        row = reader.get_pending_row()
+
     if not row:
         return {"status": "no_pending_rows"}
 
@@ -32,5 +39,5 @@ def run_pipeline() -> dict:
         try:
             reader.update_error(row_index, str(exc))
         except Exception:
-            pass  # don't let error-reporting mask the real exception
+            pass
         raise

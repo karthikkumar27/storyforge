@@ -36,6 +36,24 @@ class GSheetReader:
         self.sheet.update_cell(row_index, self._col("status"), "error")
         self.sheet.update_cell(row_index, self._col("error_msg"), error_msg)
 
+    def append_pending_row(self, brief_data: dict) -> None:
+        """Append a new row with generated brief, setting status=pending."""
+        headers = self.sheet.row_values(1)
+        row = [""] * len(headers)
+        field_map = {
+            "title_hint": "title",
+            "story_brief": "story_brief",
+            "genre": "genre",
+        }
+        for src_key, col_name in field_map.items():
+            if src_key in brief_data and col_name in headers:
+                row[headers.index(col_name)] = brief_data[src_key]
+        if "status" in headers:
+            row[headers.index("status")] = "pending"
+        if "duration_sec" in headers:
+            row[headers.index("duration_sec")] = 75
+        self.sheet.append_row(row)
+
     def _col(self, name: str) -> int:
         headers = self.sheet.row_values(1)
         if name not in headers:
