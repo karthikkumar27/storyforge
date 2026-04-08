@@ -2,21 +2,14 @@
 import json
 import pytest
 from unittest.mock import MagicMock, patch
+from config import SHOTS_COUNT
 
 SAMPLE_RESPONSE = {
     "narrative": "In the void between stars, a signal pulses...",
     "title": "The Last Signal",
     "description": "A haunting journey through deep space where silence speaks louder than fear.",
     "tags": ["scifi", "space", "horror", "cinematic", "shortfilm"],
-    "shots": [
-        "Slow orbital pan around a derelict space station, deep space black, distant nebula glow.",
-        "Interior corridor, emergency red lighting flickers, dust particles float in zero-g.",
-        "Close-up of cracked helmet visor reflecting a dying star.",
-        "Wide dolly push through an airlock, cold blue light bleeds in from outside.",
-        "Extreme close-up of a blinking distress beacon, pulse slowing.",
-        "Pull back reveal: massive alien monolith drifts behind the station.",
-        "Final wide shot: the station, the monolith, silence and stars.",
-    ],
+    "shots": [f"Shot {i}: cinematic description {i}." for i in range(1, SHOTS_COUNT + 1)],
 }
 
 
@@ -35,7 +28,7 @@ def test_generate_returns_parsed_dict(mock_anthropic_class, monkeypatch):
     result = gen.generate("A ghost astronaut haunts an abandoned station", "blend")
 
     assert result["narrative"] == "In the void between stars, a signal pulses..."
-    assert len(result["shots"]) == 7
+    assert len(result["shots"]) == SHOTS_COUNT
     assert result["title"] == "The Last Signal"
     assert "tags" in result
     assert "description" in result
