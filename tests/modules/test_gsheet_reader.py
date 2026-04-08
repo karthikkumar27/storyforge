@@ -5,8 +5,7 @@ from unittest.mock import MagicMock, patch
 
 
 @patch("modules.gsheet_reader.gspread")
-@patch("modules.gsheet_reader.Credentials")
-def test_get_pending_row_returns_first_pending(mock_creds, mock_gspread, monkeypatch):
+def test_get_pending_row_returns_first_pending(mock_gspread, monkeypatch):
     monkeypatch.setenv("GOOGLE_SHEETS_CREDENTIALS", json.dumps({"type": "service_account"}))
     monkeypatch.setenv("GOOGLE_SHEET_ID", "sheet123")
 
@@ -15,7 +14,7 @@ def test_get_pending_row_returns_first_pending(mock_creds, mock_gspread, monkeyp
         {"title": "Test", "story_brief": "A spaceship drifts", "genre": "sci-fi",
          "duration_sec": 75, "status": "pending"},
     ]
-    mock_gspread.authorize.return_value.open_by_key.return_value.sheet1 = mock_sheet
+    mock_gspread.service_account_from_dict.return_value.open_by_key.return_value.sheet1 = mock_sheet
 
     from modules.gsheet_reader import GSheetReader
     reader = GSheetReader()
@@ -27,8 +26,7 @@ def test_get_pending_row_returns_first_pending(mock_creds, mock_gspread, monkeyp
 
 
 @patch("modules.gsheet_reader.gspread")
-@patch("modules.gsheet_reader.Credentials")
-def test_get_pending_row_skips_done_rows(mock_creds, mock_gspread, monkeypatch):
+def test_get_pending_row_skips_done_rows(mock_gspread, monkeypatch):
     monkeypatch.setenv("GOOGLE_SHEETS_CREDENTIALS", json.dumps({"type": "service_account"}))
     monkeypatch.setenv("GOOGLE_SHEET_ID", "sheet123")
 
@@ -39,7 +37,7 @@ def test_get_pending_row_skips_done_rows(mock_creds, mock_gspread, monkeypatch):
         {"title": "New", "story_brief": "New idea", "genre": "horror",
          "duration_sec": 75, "status": "pending"},
     ]
-    mock_gspread.authorize.return_value.open_by_key.return_value.sheet1 = mock_sheet
+    mock_gspread.service_account_from_dict.return_value.open_by_key.return_value.sheet1 = mock_sheet
 
     from modules.gsheet_reader import GSheetReader
     reader = GSheetReader()
@@ -50,8 +48,7 @@ def test_get_pending_row_skips_done_rows(mock_creds, mock_gspread, monkeypatch):
 
 
 @patch("modules.gsheet_reader.gspread")
-@patch("modules.gsheet_reader.Credentials")
-def test_get_pending_row_returns_none_when_all_done(mock_creds, mock_gspread, monkeypatch):
+def test_get_pending_row_returns_none_when_all_done(mock_gspread, monkeypatch):
     monkeypatch.setenv("GOOGLE_SHEETS_CREDENTIALS", json.dumps({"type": "service_account"}))
     monkeypatch.setenv("GOOGLE_SHEET_ID", "sheet123")
 
@@ -60,7 +57,7 @@ def test_get_pending_row_returns_none_when_all_done(mock_creds, mock_gspread, mo
         {"title": "Done", "story_brief": "Old", "genre": "sci-fi",
          "duration_sec": 75, "status": "done"},
     ]
-    mock_gspread.authorize.return_value.open_by_key.return_value.sheet1 = mock_sheet
+    mock_gspread.service_account_from_dict.return_value.open_by_key.return_value.sheet1 = mock_sheet
 
     from modules.gsheet_reader import GSheetReader
     reader = GSheetReader()
@@ -68,8 +65,7 @@ def test_get_pending_row_returns_none_when_all_done(mock_creds, mock_gspread, mo
 
 
 @patch("modules.gsheet_reader.gspread")
-@patch("modules.gsheet_reader.Credentials")
-def test_update_status_writes_correct_cell(mock_creds, mock_gspread, monkeypatch):
+def test_update_status_writes_correct_cell(mock_gspread, monkeypatch):
     monkeypatch.setenv("GOOGLE_SHEETS_CREDENTIALS", json.dumps({"type": "service_account"}))
     monkeypatch.setenv("GOOGLE_SHEET_ID", "sheet123")
 
@@ -78,7 +74,7 @@ def test_update_status_writes_correct_cell(mock_creds, mock_gspread, monkeypatch
         "title", "story_brief", "script_text", "genre", "duration_sec",
         "status", "youtube_url", "error_msg"
     ]
-    mock_gspread.authorize.return_value.open_by_key.return_value.sheet1 = mock_sheet
+    mock_gspread.service_account_from_dict.return_value.open_by_key.return_value.sheet1 = mock_sheet
 
     from modules.gsheet_reader import GSheetReader
     reader = GSheetReader()

@@ -1,19 +1,13 @@
 import os
 import json
 import gspread
-from google.oauth2.service_account import Credentials
-
-SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 
 class GSheetReader:
     def __init__(self):
-        creds_json = os.environ["GOOGLE_SHEETS_CREDENTIALS"]
-        creds_dict = json.loads(creds_json)
-        creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
-        gc = gspread.authorize(creds)
+        creds_dict = json.loads(os.environ["GOOGLE_SHEETS_CREDENTIALS"])
         sheet_id = os.environ["GOOGLE_SHEET_ID"]
-        self.sheet = gc.open_by_key(sheet_id).sheet1
+        self.sheet = gspread.service_account_from_dict(creds_dict).open_by_key(sheet_id).sheet1
 
     def get_pending_row(self) -> dict | None:
         records = self.sheet.get_all_records()
@@ -44,4 +38,6 @@ class GSheetReader:
 
     def _col(self, name: str) -> int:
         headers = self.sheet.row_values(1)
+        if name not in headers:
+            raise ValueError(f"Column '{name}' not found in sheet headers: {headers}")
         return headers.index(name) + 1
