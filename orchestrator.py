@@ -12,9 +12,10 @@ def run_pipeline() -> dict:
         return {"status": "no_pending_rows"}
 
     row_index = row["row_index"]
-    reader.update_status(row_index, "generating")
 
     try:
+        reader.update_status(row_index, "generating")
+
         script_result = ScriptGenerator().generate(row["story_brief"], row["genre"])
         reader.update_script(row_index, script_result["narrative"])
 
@@ -28,5 +29,8 @@ def run_pipeline() -> dict:
         return {"status": "done", "youtube_url": youtube_url}
 
     except Exception as exc:
-        reader.update_error(row_index, str(exc))
+        try:
+            reader.update_error(row_index, str(exc))
+        except Exception:
+            pass  # don't let error-reporting mask the real exception
         raise

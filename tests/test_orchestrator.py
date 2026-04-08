@@ -92,6 +92,5 @@ def test_run_pipeline_sets_status_generating_before_script(
     from orchestrator import run_pipeline
     run_pipeline()
 
-    status_calls = [c.args for c in mock_reader.update_status.call_args_list]
-    assert ("generating",) in [args[1:] for args in status_calls]
-    assert ("uploading",) in [args[1:] for args in status_calls]
+    status_calls = [c.args[1] for c in mock_reader.update_status.call_args_list]
+    assert status_calls == ["generating", "uploading"]
