@@ -1,6 +1,7 @@
 # tests/modules/test_audio_mixer.py
 import pytest
 from unittest.mock import MagicMock, patch
+from config import MUSIC_MAP
 
 
 @patch("modules.audio_mixer.httpx")
@@ -13,9 +14,7 @@ def test_voiceover_uses_adam_for_scifi(mock_httpx, monkeypatch, tmp_path):
 
     from modules.audio_mixer import AudioMixer
     mixer = AudioMixer()
-
-    with patch("modules.audio_mixer.tempfile.mkdtemp", return_value=str(tmp_path)):
-        mixer._generate_voiceover("In the void between stars...", "sci-fi")
+    mixer._generate_voiceover("In the void between stars...", "sci-fi", str(tmp_path))
 
     call_url = mock_httpx.post.call_args[0][0]
     assert "pNInz6obpgDQGcFmaJgB" in call_url  # Adam
@@ -31,9 +30,7 @@ def test_voiceover_uses_arnold_for_horror(mock_httpx, monkeypatch, tmp_path):
 
     from modules.audio_mixer import AudioMixer
     mixer = AudioMixer()
-
-    with patch("modules.audio_mixer.tempfile.mkdtemp", return_value=str(tmp_path)):
-        mixer._generate_voiceover("Something dark lurks...", "horror")
+    mixer._generate_voiceover("Something dark lurks...", "horror", str(tmp_path))
 
     call_url = mock_httpx.post.call_args[0][0]
     assert "VR6AewLTigWG4xSOukaG" in call_url  # Arnold
@@ -56,7 +53,7 @@ def test_mix_calls_ffmpeg_with_video_voiceover_and_music(
     assert args[0] == "ffmpeg"
     assert video_path in args
     assert str(tmp_path / "voiceover.mp3") in args
-    assert "assets/music/sci-fi.mp3" in args
+    assert MUSIC_MAP["sci-fi"] in args
 
 
 @patch("modules.audio_mixer.subprocess.run")
@@ -71,3 +68,13 @@ def test_mix_output_path_is_final_mp4(mock_voiceover, mock_run, monkeypatch, tmp
     output = mixer.mix(video_path, "narrative", "horror")
 
     assert output == str(tmp_path / "final.mp4")
+
+
+def test_mix_raises_on_non_stitched_path(monkeypatch, tmp_path):
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "el-key")
+
+    from modules.audio_mixer import AudioMixer
+    mixer = AudioMixer()
+
+    with pytest.raises(ValueError, match="stitched.mp4"):
+        mixer.mix(str(tmp_path / "wrong_name.mp4"), "narrative", "sci-fi")
