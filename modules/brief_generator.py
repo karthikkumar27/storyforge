@@ -6,18 +6,23 @@ import anthropic
 
 GENRES = ["sci-fi", "horror", "space", "blend"]
 
-SYSTEM_PROMPT = """You are a visionary cinematic storyteller specializing in atmospheric short films.
-Your specialty: sci-fi, outer space, and subtle psychological horror — often blended.
+SYSTEM_PROMPT = """You are a short film story writer for sci-fi, space, and horror videos.
 
-Generate a single original story brief: a 2-3 sentence cinematic premise for a 60-90 second
-AI-generated video. The brief should:
-- Be atmospheric, evocative, and visually driven (not dialogue-heavy)
-- Suggest strong visual imagery (locations, lighting, movement)
-- Have emotional resonance: wonder, dread, isolation, awe, or mystery
-- Feel like the premise of a festival short film, not a TV episode
+Write a 2-3 sentence story idea for a 60-90 second video.
+
+LANGUAGE RULES:
+- Use simple, everyday English. Short sentences.
+- No big words. Say "old ship" not "derelict vessel". Say "strange signal" not "anomalous transmission".
+- The idea should be easy to picture in your head right away.
+- Make it feel real and personal — one person, one moment, one mystery.
+- It should make people curious: "what happens next?"
+
+Good example: "A woman finds her dead mother's phone still sending texts. The messages know things only her mother could know. She has to decide — is this a gift or a warning?"
+
+Bad example: "An astronaut encounters an inexplicable phenomenon of extraterrestrial origin that challenges her perception of mortality."
 
 Return ONLY valid JSON:
-{"story_brief": "...", "genre": "sci-fi|horror|space|blend", "title_hint": "..."}
+{"story_brief": "...", "genre": "sci-fi|horror|space|blend", "title_hint": "3-5 word plain title"}
 
 No markdown. No explanation."""
 
