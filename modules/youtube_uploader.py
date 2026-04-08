@@ -20,7 +20,7 @@ class YouTubeUploader:
             client_secret=os.environ["YOUTUBE_CLIENT_SECRET"],
             scopes=YOUTUBE_SCOPES,
         )
-        if self.creds.expired:
+        if not self.creds.valid:
             self.creds.refresh(Request())
         self.youtube = build("youtube", "v3", credentials=self.creds)
 
@@ -39,6 +39,11 @@ class YouTubeUploader:
             part="snippet,status", body=body, media_body=media
         )
         response = None
-        while response is None:
+        MAX_UPLOAD_CHUNKS = 10_000
+        for _ in range(MAX_UPLOAD_CHUNKS):
             _, response = request.next_chunk()
+            if response is not None:
+                break
+        else:
+            raise RuntimeError("YouTube upload did not complete after maximum chunk iterations")
         return f"https://www.youtube.com/watch?v={response['id']}"
