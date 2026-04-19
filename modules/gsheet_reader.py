@@ -28,6 +28,9 @@ class GSheetReader:
     def update_script(self, row_index: int, script_text: str) -> None:
         self.sheet.update_cell(row_index, self._col("script_text"), script_text)
 
+    def update_ref_image(self, row_index: int, ref_image_url: str) -> None:
+        self.sheet.update_cell(row_index, self._col("ref_image_url"), ref_image_url)
+
     def update_done(self, row_index: int, youtube_url: str) -> None:
         self.sheet.update_cell(row_index, self._col("status"), "done")
         self.sheet.update_cell(row_index, self._col("youtube_url"), youtube_url)
@@ -44,6 +47,9 @@ class GSheetReader:
             "title_hint": "title",
             "story_brief": "story_brief",
             "genre": "genre",
+            "series_id": "series_id",
+            "part_number": "part_number",
+            "story_mode": "story_mode",
         }
         for src_key, col_name in field_map.items():
             if src_key in brief_data and col_name in headers:
@@ -53,6 +59,43 @@ class GSheetReader:
         if "duration_sec" in headers:
             row[headers.index("duration_sec")] = 75
         self.sheet.append_row(row)
+
+    def get_series_parts(self, series_id: str) -> list[dict]:
+        """Get all completed parts of a series, ordered by part number."""
+        records = self.sheet.get_all_records()
+        parts = []
+        for row in records:
+            if row.get("series_id") == series_id and row.get("status") == "done":
+                parts.append(row)
+        parts.sort(key=lambda r: int(r.get("part_number", 0)))
+        return parts
+
+    def get_latest_incomplete_series(self) -> str | None:
+        """Find a series that has completed parts but isn't finished yet."""
+        from config import SERIES_PARTS
+        records = self.sheet.get_all_records()
+        series_counts = {}
+        for row in records:
+            sid = row.get("series_id")
+            if sid and row.get("status") == "done":
+                series_counts[sid] = series_counts.get(sid, 0) + 1
+        for sid, count in series_counts.items():
+            if count < SERIES_PARTS:
+                return sid
+        return None
+
+    def get_past_stories(self, limit: int = 20) -> list[dict]:
+        """Get recent completed stories to avoid repetition."""
+        records = self.sheet.get_all_records()
+        stories = []
+        for row in records:
+            if row.get("status") == "done" and row.get("story_brief"):
+                stories.append({
+                    "title": row.get("title", ""),
+                    "story_brief": row.get("story_brief", ""),
+                    "genre": row.get("genre", ""),
+                })
+        return stories[-limit:]
 
     def _col(self, name: str) -> int:
         headers = self.sheet.row_values(1)

@@ -1,9 +1,11 @@
 import os
-from flask import Flask, jsonify
+import traceback
 from dotenv import load_dotenv
-from orchestrator import run_pipeline
 
 load_dotenv()
+
+from flask import Flask, jsonify
+from orchestrator import run_pipeline
 
 app = Flask(__name__)
 
@@ -14,7 +16,13 @@ def run():
         result = run_pipeline()
         return jsonify(result), 200
     except Exception as exc:
-        return jsonify({"error": str(exc)}), 500
+        tb = traceback.format_exc()
+        print(tb, flush=True)
+        return jsonify({
+            "error": str(exc) or repr(exc),
+            "type": type(exc).__name__,
+            "traceback": tb,
+        }), 500
 
 
 @app.route("/health", methods=["GET"])

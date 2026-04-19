@@ -9,6 +9,8 @@ import os
 from anthropic import Anthropic
 from dotenv import load_dotenv
 
+from config import CLAUDE_MODEL
+
 load_dotenv()
 
 RUBRIC = """Evaluate each AI video generation tool against these criteria (score 0-5 each):
@@ -50,7 +52,7 @@ SYSTEM = "You are an expert in AI video generation tools with up-to-date knowled
 def discover_best_tool() -> dict:
     client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
     message = client.messages.create(
-        model="claude-opus-4-6",
+        model=CLAUDE_MODEL,
         max_tokens=2000,
         system=SYSTEM,
         messages=[{"role": "user", "content": RUBRIC}],

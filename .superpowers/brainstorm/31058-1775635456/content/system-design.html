@@ -1,0 +1,90 @@
+<h2>System Design — Cinematic AI Agent</h2>
+<p class="subtitle">Full pipeline: Google Sheets → Script → Video → Audio → YouTube</p>
+
+<div class="section">
+  <span class="label">Trigger</span>
+  <div style="margin-top:8px;padding:12px;background:rgba(255,255,255,0.05);border-radius:8px;text-align:center;font-size:13px;">
+    ☁️ <strong>GCP Cloud Scheduler</strong> — fires daily at <strong>10:00 PM UTC+8</strong> (14:00 UTC) → invokes Cloud Function
+  </div>
+</div>
+
+<div class="section">
+  <span class="label">Pipeline Flow</span>
+  <div style="margin-top:12px;display:flex;flex-direction:column;gap:8px;">
+
+    <div style="display:flex;align-items:center;gap:12px">
+      <div style="width:36px;height:36px;border-radius:50%;background:#4CAF50;display:flex;align-items:center;justify-content:center;font-weight:bold;flex-shrink:0">1</div>
+      <div style="flex:1;padding:10px 14px;background:rgba(255,255,255,0.07);border-radius:8px">
+        <strong>GSheet Reader</strong> — scans for rows with <code>status=pending</code>, picks first unprocessed row, reads <code>story_brief</code> + metadata
+      </div>
+    </div>
+
+    <div style="text-align:center;color:#888;font-size:18px">↓</div>
+
+    <div style="display:flex;align-items:center;gap:12px">
+      <div style="width:36px;height:36px;border-radius:50%;background:#2196F3;display:flex;align-items:center;justify-content:center;font-weight:bold;flex-shrink:0">2</div>
+      <div style="flex:1;padding:10px 14px;background:rgba(255,255,255,0.07);border-radius:8px">
+        <strong>Script Generator</strong> (Claude) — generates cinematic narrative script from the brief in sci-fi / outer space / subtle horror genre blend. Outputs: <code>script_text</code> + <code>shots[]</code> (6–9 Kling prompts, ~10 sec each)
+      </div>
+    </div>
+
+    <div style="text-align:center;color:#888;font-size:18px">↓</div>
+
+    <div style="display:flex;align-items:center;gap:12px">
+      <div style="width:36px;height:36px;border-radius:50%;background:#9C27B0;display:flex;align-items:center;justify-content:center;font-weight:bold;flex-shrink:0">3</div>
+      <div style="flex:1;padding:10px 14px;background:rgba(255,255,255,0.07);border-radius:8px">
+        <strong>Video Producer</strong> — sends each shot prompt to Kling AI API (Access Key + Secret JWT auth), downloads MP4 clips, stitches with <code>ffmpeg</code> into one 60–90 sec video
+      </div>
+    </div>
+
+    <div style="text-align:center;color:#888;font-size:18px">↓</div>
+
+    <div style="display:flex;align-items:center;gap:12px">
+      <div style="width:36px;height:36px;border-radius:50%;background:#FF9800;display:flex;align-items:center;justify-content:center;font-weight:bold;flex-shrink:0">4</div>
+      <div style="flex:1;padding:10px 14px;background:rgba(255,255,255,0.07);border-radius:8px">
+        <strong>Audio Mixer</strong> — Claude picks narrator voice (sci-fi→Adam, horror→Arnold, blend→Antoni), ElevenLabs generates voiceover, adds royalty-free atmospheric music, <code>ffmpeg</code> mixes both onto video
+      </div>
+    </div>
+
+    <div style="text-align:center;color:#888;font-size:18px">↓</div>
+
+    <div style="display:flex;align-items:center;gap:12px">
+      <div style="width:36px;height:36px;border-radius:50%;background:#F44336;display:flex;align-items:center;justify-content:center;font-weight:bold;flex-shrink:0">5</div>
+      <div style="flex:1;padding:10px 14px;background:rgba(255,255,255,0.07);border-radius:8px">
+        <strong>YouTube Uploader</strong> — Claude generates title, description, tags. Uploads via YouTube Data API v3 (OAuth2). Updates GSheet row: <code>status=done</code>, writes YouTube URL
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <span class="label">GSheet Schema</span>
+  <div style="margin-top:8px;overflow-x:auto">
+    <table style="width:100%;border-collapse:collapse;font-size:13px">
+      <thead>
+        <tr style="background:rgba(255,255,255,0.1)">
+          <th style="padding:8px 12px;text-align:left">Column</th>
+          <th style="padding:8px 12px;text-align:left">Type</th>
+          <th style="padding:8px 12px;text-align:left">Description</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr style="border-top:1px solid rgba(255,255,255,0.05)"><td style="padding:8px 12px"><code>title</code></td><td style="padding:8px 12px">string</td><td style="padding:8px 12px">Optional video title hint</td></tr>
+        <tr style="border-top:1px solid rgba(255,255,255,0.05)"><td style="padding:8px 12px"><code>story_brief</code></td><td style="padding:8px 12px">string</td><td style="padding:8px 12px">1–3 sentence idea. Claude generates full script from this.</td></tr>
+        <tr style="border-top:1px solid rgba(255,255,255,0.05)"><td style="padding:8px 12px"><code>script_text</code></td><td style="padding:8px 12px">string</td><td style="padding:8px 12px">Auto-filled by Claude after generation</td></tr>
+        <tr style="border-top:1px solid rgba(255,255,255,0.05)"><td style="padding:8px 12px"><code>genre</code></td><td style="padding:8px 12px">enum</td><td style="padding:8px 12px">sci-fi / horror / space / blend</td></tr>
+        <tr style="border-top:1px solid rgba(255,255,255,0.05)"><td style="padding:8px 12px"><code>duration_sec</code></td><td style="padding:8px 12px">int</td><td style="padding:8px 12px">Target duration (default: 75)</td></tr>
+        <tr style="border-top:1px solid rgba(255,255,255,0.05)"><td style="padding:8px 12px"><code>status</code></td><td style="padding:8px 12px">enum</td><td style="padding:8px 12px">pending → generating → uploading → done / error</td></tr>
+        <tr style="border-top:1px solid rgba(255,255,255,0.05)"><td style="padding:8px 12px"><code>youtube_url</code></td><td style="padding:8px 12px">string</td><td style="padding:8px 12px">Auto-filled after upload</td></tr>
+        <tr style="border-top:1px solid rgba(255,255,255,0.05)"><td style="padding:8px 12px"><code>error_msg</code></td><td style="padding:8px 12px">string</td><td style="padding:8px 12px">Filled if status=error</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="section">
+  <span class="label">Error Handling</span>
+  <div style="margin-top:8px;padding:12px;background:rgba(255,255,255,0.05);border-radius:8px;font-size:13px;">
+    Each module catches its own exceptions → writes <code>status=error</code> + <code>error_msg</code> to GSheet row → pipeline stops for that row. Next day's run skips <code>error</code> rows unless manually reset to <code>pending</code>.
+  </div>
+</div>

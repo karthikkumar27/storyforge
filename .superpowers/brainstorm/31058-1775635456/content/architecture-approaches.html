@@ -1,0 +1,43 @@
+<h2>Architecture Approaches</h2>
+<p class="subtitle">Choose the structure for your Cinematic AI Agent pipeline</p>
+
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Monolithic Script</h3>
+      <p>Single Python file handles everything — GSheet read, Claude script gen, Kling API, ffmpeg, YouTube upload. Runs as one Cloud Function.</p>
+      <div class="pros-cons" style="margin-top:10px">
+        <div class="pros"><h4>Pros</h4><ul><li>Simple to deploy</li><li>Easy to debug</li></ul></div>
+        <div class="cons"><h4>Cons</h4><ul><li>Hard to test each stage</li><li>One failure breaks everything</li><li>Can't swap tools easily</li></ul></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Modular Pipeline ⭐ Recommended</h3>
+      <p>Claude orchestrates 5 independent modules. Each module has one job and can be tested, swapped, or extended without touching others.</p>
+      <div style="margin:10px 0;padding:10px;background:rgba(255,255,255,0.05);border-radius:6px;font-size:13px;">
+        <code>GSheet Reader → Script Generator → Video Producer → Audio Mixer → YouTube Uploader</code>
+      </div>
+      <div class="pros-cons" style="margin-top:10px">
+        <div class="pros"><h4>Pros</h4><ul><li>Each stage is independently testable</li><li>Easy to swap Kling for another tool</li><li>Claude orchestrates intelligently</li><li>Clear error isolation</li></ul></div>
+        <div class="cons"><h4>Cons</h4><ul><li>More files to manage</li></ul></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Event-Driven Microservices</h3>
+      <p>Each stage is a separate Cloud Function. Cloud Tasks / Pub/Sub connects them. Maximum scalability — process 10 videos in parallel.</p>
+      <div class="pros-cons" style="margin-top:10px">
+        <div class="pros"><h4>Pros</h4><ul><li>Highly scalable</li><li>Retry individual stages</li><li>Parallel video processing</li></ul></div>
+        <div class="cons"><h4>Cons</h4><ul><li>Complex GCP setup</li><li>Harder to debug</li><li>Overkill for daily single video</li></ul></div>
+      </div>
+    </div>
+  </div>
+</div>
