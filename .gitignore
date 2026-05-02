@@ -10,3 +10,13 @@ __pycache__/
 venv/
 
 .DS_Store
+
+# Local pipeline outputs — too large/transient to commit
+last_video*.mp4
+*.mp4
+
+# Generated title/end card cache (rebuilt from source on first run)
+assets/cache/
+
+# Temporary debug/preflight scripts (named with leading underscore by convention)
+_*.py
