@@ -70,20 +70,44 @@ class BaseVideoProducer(ABC):
 
         # Cards present — re-encode via filter_complex concat for reliable playback
         # across mixed sources (renderer-built MP4s vs Atlas-generated shots).
+        # The concat filter requires every input to share the same dimensions,
+        # framerate, sample rate, and channel layout. Seedance shots and our
+        # cards may differ on any of these (e.g. shots come back at 496x864
+        # while cards build at 270x480). We normalise every input stream first.
+        target_w, target_h = self._probe_video_size(clip_paths[0])
+        target_fps = 24
+        target_sr = 44100
+        target_ch = 2
+
         cmd = ["ffmpeg", "-y"]
         for p in all_paths:
             cmd += ["-i", str(p)]
 
         n = len(all_paths)
-        filter_inputs = "".join(f"[{i}:v:0][{i}:a:0]" for i in range(n))
-        filter_complex = f"{filter_inputs}concat=n={n}:v=1:a=1[outv][outa]"
+        # For each input, scale + pad video to target size, normalise framerate,
+        # and resample audio to a consistent rate/channel layout.
+        normalise_steps = []
+        for i in range(n):
+            normalise_steps.append(
+                f"[{i}:v:0]scale={target_w}:{target_h}:force_original_aspect_ratio=decrease,"
+                f"pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2:black,"
+                f"setsar=1,fps={target_fps},format=yuv420p[v{i}]"
+            )
+            normalise_steps.append(
+                f"[{i}:a:0]aresample={target_sr},aformat=channel_layouts=stereo[a{i}]"
+            )
+        concat_inputs = "".join(f"[v{i}][a{i}]" for i in range(n))
+        filter_complex = (
+            ";".join(normalise_steps)
+            + f";{concat_inputs}concat=n={n}:v=1:a=1[outv][outa]"
+        )
 
         cmd += [
             "-filter_complex", filter_complex,
             "-map", "[outv]", "-map", "[outa]",
             "-c:v", "libx264", "-preset", "fast", "-crf", "20",
             "-pix_fmt", "yuv420p",
-            "-c:a", "aac", "-b:a", "128k", "-ar", "44100",
+            "-c:a", "aac", "-b:a", "128k", "-ar", str(target_sr),
             "-movflags", "+faststart",
             output_path,
         ]
@@ -92,6 +116,22 @@ class BaseVideoProducer(ABC):
         except subprocess.CalledProcessError as exc:
             stderr = exc.stderr.decode()[-800:] if exc.stderr else ""
             raise RuntimeError(f"Stitch with cards failed: {stderr}") from exc
+
+    @staticmethod
+    def _probe_video_size(path: str) -> tuple[int, int]:
+        """Return (width, height) of the video stream in path."""
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=width,height",
+                "-of", "csv=s=x:p=0",
+                str(path),
+            ],
+            check=True, capture_output=True, text=True,
+        )
+        w_str, h_str = result.stdout.strip().split("x")
+        return int(w_str), int(h_str)
 
     def produce(
         self,
