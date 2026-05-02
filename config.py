@@ -1,12 +1,31 @@
 import os
 
-# Video provider: "seedance" or "kling"
-VIDEO_PROVIDER = os.environ.get("VIDEO_PROVIDER", "seedance")
+# Video provider: "atlas" (default v2), "seedance" (v1), or "kling"
+VIDEO_PROVIDER = os.environ.get("VIDEO_PROVIDER", "atlas")
 
-# Shared video settings (YouTube Shorts: max 60s, vertical)
-SHOT_DURATION = 10
+# Image provider: "atlas" (GPT Image 2) or "seedream" (BytePlus)
+IMAGE_PROVIDER = os.environ.get("IMAGE_PROVIDER", "atlas")
+
+# Shared video settings (9:16 vertical, 50s total = 5s title + 40s story + 5s end card).
+# Story segment: 5 shots x 8s = 40s, matching the Chronicle of Zenith series bible.
+# Title and end card MP4s are auto-prepended/appended when configured per preset
+# (assets/title_cards/, assets/end_cards/) — gracefully skipped if assets missing.
+SHOT_DURATION = 8
 ASPECT_RATIO = "9:16"
 SHOTS_COUNT = 5
+
+# Atlas Cloud (unified API — GPT Image 2 + Seedance 1.5 Pro Fast)
+ATLAS_BASE_URL = "https://api.atlascloud.ai/api/v1"
+ATLAS_VIDEO_MODEL_I2V = "bytedance/seedance-v1.5-pro/image-to-video-fast"
+ATLAS_VIDEO_MODEL_T2V = "bytedance/seedance-v1.5-pro/text-to-video"
+ATLAS_IMAGE_MODEL = "openai/gpt-image-2/text-to-image"
+# Image-to-image edit — used to generate per-shot storyboard frames anchored to a
+# locked character reference. Each shot calls this with the locked Alan/Zenith URL
+# as the base image and the shot's scene description as the prompt, producing a
+# new still that keeps the character identical but matches the shot's pose/setting.
+ATLAS_IMAGE_EDIT_MODEL = "openai/gpt-image-2/edit"
+ATLAS_POLL_INTERVAL_SEC = int(os.environ.get("ATLAS_POLL_INTERVAL_SEC", "15"))
+ATLAS_MAX_POLL_ATTEMPTS = int(os.environ.get("ATLAS_MAX_POLL_ATTEMPTS", "60"))
 
 # Kling AI
 KLING_BASE_URL = "https://api.klingai.com"
@@ -30,18 +49,16 @@ ACTIVE_PRESET = os.environ.get("CONTENT_PRESET", "preset-1")
 PRESETS = {
     "preset-1": {
         "name": "Dark Cinematic",
-        "genres": ["sci-fi", "horror", "space", "blend"],
+        "genres": ["sci-fi", "space"],
         "brief_system": (
-            "You are a short film story writer for sci-fi, space, and horror videos.\n\n"
+            "You are a short film story writer for sci-fi and space videos.\n\n"
             "Write a 2-3 sentence story idea for a short video.\n"
             "Make it dark, mysterious, and gripping. One person, one moment, one mystery.\n"
             "Think: Netflix thriller narration."
         ),
         "voice_map": {
-            "sci-fi": "nPczCjzI2devNBz1zQrb",   # Brian — deep, resonant
-            "horror": "nPczCjzI2devNBz1zQrb",   # Brian
-            "space":  "nPczCjzI2devNBz1zQrb",   # Brian
-            "blend":  "nPczCjzI2devNBz1zQrb",   # Brian
+            "sci-fi": "pNInz6obpgDQGcFmaJgB",   # Adam — dominant, firm
+            "space":  "pNInz6obpgDQGcFmaJgB",   # Adam
         },
         "music_tags": ["cinematic", "dark", "ambient", "atmospheric"],
         "video_style": "photorealistic",
@@ -84,10 +101,10 @@ PRESETS = {
             "Think: Game of Thrones meets Studio Ghibli."
         ),
         "voice_map": {
-            "fantasy":      "JBFqnCBsd6RMkjVDRZzb",  # George — warm, British storyteller
-            "mythology":    "JBFqnCBsd6RMkjVDRZzb",  # George
-            "supernatural": "JBFqnCBsd6RMkjVDRZzb",  # George
-            "steampunk":    "JBFqnCBsd6RMkjVDRZzb",  # George
+            "fantasy":      "pNInz6obpgDQGcFmaJgB",  # Adam — dominant, firm
+            "mythology":    "pNInz6obpgDQGcFmaJgB",  # Adam
+            "supernatural": "pNInz6obpgDQGcFmaJgB",  # Adam
+            "steampunk":    "pNInz6obpgDQGcFmaJgB",  # Adam
         },
         "music_tags": ["epic", "orchestral", "fantasy", "mythical", "cinematic"],
         "video_style": "photorealistic fantasy",
@@ -168,6 +185,50 @@ PRESETS = {
         "story_mode": "series",
         "series_parts": 999,
         "youtube_category": "27",     # Education
+    },
+    "preset-7": {
+        "name": "Zenith Chronicles",
+        "genres": ["origin-story", "transformation", "galaxy-quest", "earth-encounter"],
+        "brief_system": (
+            "You are a story writer for short sci-fi anime videos about Zenith.\n\n"
+            "Write a 2-3 sentence story idea for a short video.\n"
+            "The main character is ALWAYS Alan, aka Zenith — a space traveller whose entire species went extinct when he was young.\n"
+            "As he grew up alone, he discovered his hidden powers and abilities.\n"
+            "Now he travels the galaxy searching for answers about his race.\n"
+            "He found a clue: Voyager-1's golden disk revealed Earth's exact location, and signals suggest a species similar to his own may exist there.\n"
+            "Each episode explores the next chapter: Does he find others like him? Will he protect Earth or become its greatest threat? What secrets does his race hold?\n"
+            "Show both his normal form and his powerful transformation form (Zenith mode — glowing energy aura, eyes blazing).\n"
+            "The tone is epic, emotional, and mysterious — a lone survivor searching for belonging.\n"
+            "IMPORTANT: Do NOT use any copyrighted character names or franchise references.\n"
+            "Think: last survivor of an alien race discovers Earth and must choose his destiny."
+        ),
+        "voice_map": {
+            "origin-story":      "pNInz6obpgDQGcFmaJgB",  # Adam — dominant, intense
+            "transformation":    "pNInz6obpgDQGcFmaJgB",  # Adam
+            "galaxy-quest":      "pNInz6obpgDQGcFmaJgB",  # Adam
+            "earth-encounter":   "pNInz6obpgDQGcFmaJgB",  # Adam
+        },
+        "music_tags": ["epic", "sci-fi", "emotional", "orchestral", "cosmic", "mysterious"],
+        "video_style": "anime cel-shaded, cinematic sci-fi",
+        "story_mode": "series",
+        "series_parts": 999,
+        "youtube_category": "1",      # Film & Animation
+        # Title / end cards — drop PNG + MP3 files at these paths; pipeline auto-builds MP4.
+        # If files are missing, cards are silently skipped (current behavior preserved).
+        "title_card": {
+            "image": "assets/title_cards/zenith.png",
+            "audio": "assets/title_cards/zenith_sting.mp3",
+            "duration": 5.0,
+            "fade_in": 0.5,
+            "fade_out": 0.3,
+        },
+        "end_card": {
+            "image": "assets/end_cards/zenith.png",
+            "audio": "assets/end_cards/zenith_sting.mp3",
+            "duration": 5.0,
+            "fade_in": 0.3,
+            "fade_out": 0.8,
+        },
     },
 }
 

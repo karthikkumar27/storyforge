@@ -94,7 +94,7 @@ class AudioMixer:
                     "-i", voiceover_path,
                     "-i", bgm_path,
                     "-filter_complex",
-                    "[1:a]volume=1.0[vo];[2:a]volume=0.25[bg];[vo][bg]amix=inputs=2:duration=first[aout]",
+                    "[1:a]volume=1.0[vo];[2:a]volume=0.10[bg];[vo][bg]amix=inputs=2:duration=first[aout]",
                     "-map", "0:v", "-map", "[aout]",
                     "-c:v", "copy", "-c:a", "aac", "-shortest",
                     output_path,
