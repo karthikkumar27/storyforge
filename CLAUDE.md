@@ -11,6 +11,7 @@ A fully automated pipeline that turns a story idea into a published YouTube vide
 | `python generate_script.py` | Generate brief + script only (no video, no upload) — useful for previewing |
 | `python scripts/generate_character_images.py` | Bulk-generate character reference images (preset-7 only) |
 | `python scripts/export_characters.py` | Refresh `chronicle of zenith/chronicle-of-zenith-characters-locked.md` from the sheet |
+| `python scripts/manual_episode.py` | Ad-hoc: read main sheet, generate video, save locally — no narration, no YouTube upload |
 
 ## Architecture Overview
 
@@ -81,7 +82,7 @@ idea-creator/
 │   ├── kids-content-specialist/   ← Loaded only for preset-4/5/6
 │   ├── chronicle-of-zenith-canon/ ← Loaded only for preset-7 — full series bible + roster
 │   ├── story-architect/           ← Legacy (kept locally, not loaded by default)
-│   └── youtube-shorts-optimizer/  ← Legacy (kept locally, not loaded by default)
+│   └── youtube-shorts-optimizer/  ← Common (all presets, script generator) — 3-sec hooks, retention, tag strategy
 │
 ├── chronicle of zenith/      ← REFERENCE DOCS for preset-7 (read these for context)
 │   ├── chronicle-of-zenith-series-bible.md         ← Locked canon: themes, mythology, dark secret, arc map

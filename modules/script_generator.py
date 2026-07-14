@@ -1,7 +1,7 @@
 import os
 import json
 import anthropic
-from config import CLAUDE_MODEL, SHOTS_COUNT, SHOT_DURATION, VIDEO_STYLE, PRESET_NAME, GENRES, BRIEF_SYSTEM_CONTEXT, ACTIVE_PRESET
+from config import CLAUDE_MODEL, SHOTS_COUNT, SHOT_DURATION, VIDEO_STYLE, PRESET_NAME, GENRES, BRIEF_SYSTEM_CONTEXT, ACTIVE_PRESET, DEFAULT_TAGS
 from modules.skill_loader import load_skills
 
 # --- SKILL LOADING -----------------------------------------------------------
@@ -13,6 +13,7 @@ COMMON_SKILLS = [
     "character-consistency",     # locked paragraphs, outfit lock, hero ref, two-gen rule
     "video-prompt-builder",      # camera, shot variety, POV, lighting, genre techniques
     "screenplay-director",       # scene blocking, screen direction, action choreography
+    "youtube-shorts-optimizer",  # 3-sec hooks, title/description/tag patterns, retention
 ]
 _skills = list(COMMON_SKILLS)
 
@@ -54,8 +55,10 @@ Your output MUST be valid JSON with exactly this structure:
 CRITICAL RULES for visual consistency:
 - visual_style must be SHORT (max 25 words) — art style, color palette, lighting mood ONLY. No character description.
 - character_image_prompt must have ALL character details — this generates the reference image that keeps the character consistent across shots.
-- Each shot description should focus on ACTION, CAMERA, and ENVIRONMENT — not re-describing the character's appearance.
-- Every shot must feature the same character/subject — never introduce a new character.
+- Each shot description should focus on ACTION, CAMERA, and ENVIRONMENT — not re-describing the main character's appearance.
+- DO NOT paste the MAIN character's locked appearance paragraph into shot prompts. The reference image handles the main character's identity automatically; restating it bloats the prompt and confuses the video model. Just refer to them by name and describe their action/pose.
+- Don't invent characters not in the brief or the CHARACTER ROSTER (if one is provided below).
+- When the CHARACTER ROSTER lists a SUPPORTING character (e.g. an AI hologram, a companion, a council figure) and the story beat involves them speaking or acting, INCLUDE THEM ON-SCREEN in that shot. Paste THE SUPPORTING CHARACTER'S LOCKED APPEARANCE description verbatim inside the shot prompt — but ONLY for supporting characters, never for the main character. Do not let supporting characters live only in the narration — if they speak or act, they must be visible in at least one shot.
 - Keep the same environment and lighting across all shots unless the story explicitly moves locations.
 
 MANDATORY REVERSE/POV SHOT RULE:
@@ -90,7 +93,7 @@ class ScriptGenerator:
     def __init__(self):
         self.client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
-    def generate(self, story_brief: str, genre: str) -> dict:
+    def generate(self, story_brief: str, genre: str, arc_number: int | None = None, episode_number: int | None = None) -> dict:
         total_duration = SHOTS_COUNT * SHOT_DURATION
         # ~2.5 words per second for narration pace
         word_count_min = int(total_duration * 2.3)
@@ -107,6 +110,19 @@ class ScriptGenerator:
             shot_duration=SHOT_DURATION,
         )
 
+        # Preset-7: pull the locked appearance paragraphs of every character active
+        # in this arc so the LLM can composite supporting characters (e.g. Veth-Ka
+        # as a column of pale gold light) into the right shots — not just the main.
+        characters_block = ""
+        if ACTIVE_PRESET == "preset-7" and arc_number and episode_number:
+            try:
+                from modules.characters_reader import format_characters_context
+                characters_block = format_characters_context(int(arc_number), int(episode_number))
+                if characters_block:
+                    print(f"[ScriptGenerator] Roster injected: arc={arc_number}, ep={episode_number}", flush=True)
+            except Exception as exc:
+                print(f"[ScriptGenerator] Roster injection failed (non-fatal): {exc}", flush=True)
+
         prompt = (
             f"Preset: {PRESET_NAME}\n"
             f"Art style: {VIDEO_STYLE}\n"
@@ -117,8 +133,10 @@ class ScriptGenerator:
             f"The narrative MUST be {word_count_min}-{word_count_max} words to fill exactly {total_duration} seconds. "
             f"Return valid JSON only."
         )
-        # Combine system prompt with all loaded skills
+        # Combine system prompt with all loaded skills + roster (if any)
         full_system = f"{system}\n\n{SKILLS_CONTENT}"
+        if characters_block:
+            full_system = f"{full_system}\n\n{characters_block}"
 
         print(f"[ScriptGenerator] Preset: {PRESET_NAME}, style: {VIDEO_STYLE}, skills loaded: {', '.join(_skills)}", flush=True)
         print(f"[ScriptGenerator] Target: {total_duration}s, {word_count_min}-{word_count_max} words", flush=True)
@@ -137,6 +155,16 @@ class ScriptGenerator:
         if style:
             result["shots"] = [f"{style} {shot}" for shot in result["shots"]]
             print(f"[ScriptGenerator] Style prefix: {style}", flush=True)
+
+        # Merge base AI/model tags into Claude's content tags. Defaults go LAST
+        # so the most discoverable, content-specific tags appear first in the
+        # YouTube tag list (YouTube weights leading tags more heavily). Dedupe
+        # case-insensitively while preserving original casing of the first occurrence.
+        original_tags = list(result.get("tags") or [])
+        seen = {t.lower() for t in original_tags}
+        merged = list(original_tags) + [t for t in DEFAULT_TAGS if t.lower() not in seen]
+        result["tags"] = merged
+        print(f"[ScriptGenerator] Tags: {len(original_tags)} content + {len(merged) - len(original_tags)} default = {len(merged)}", flush=True)
 
         return result
 

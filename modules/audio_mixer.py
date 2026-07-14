@@ -117,3 +117,109 @@ class AudioMixer:
             shutil.rmtree(workdir, ignore_errors=True)
 
         return output_path
+
+    def mix_with_native_audio(
+        self,
+        video_path: str,
+        narrative: str,
+        genre: str,
+        narration_volume: float = 1.0,
+        ambient_volume: float = 0.32,
+        narration_start_offset: float = 0.0,
+        narration_end_buffer: float = 0.0,
+    ) -> str:
+        """Mix ElevenLabs narration over the video's NATIVE audio track
+        (which already contains Seedance's ambient + SFX + lip-sync sounds).
+        No ElevenLabs BGM is generated — Seedance's native audio is the bed.
+
+        narration_start_offset: seconds to delay the narration start (e.g. so
+            it doesn't speak over the title card sting). 5.0 for preset-7's
+            5-second title card.
+
+        narration_end_buffer: seconds of silence the narration should leave at
+            the end of the story segment (so it doesn't overlap the end card).
+            5.0 for preset-7's 5-second end card. The narration is faded out
+            over the last 0.5s before this buffer begins.
+
+        Volumes follow broadcast voiceover-over-ambient convention:
+        - narration_volume = 1.0  (100% — the story's voice, must dominate)
+        - ambient_volume   = 0.32 (~32% — audible bed without fighting speech)
+
+        All four parameters are tunable per preset via the audio_mix config
+        block (see config.py PRESETS).
+        """
+        output_path = video_path.replace("stitched.mp4", "final.mp4")
+        if output_path == video_path:
+            raise ValueError(
+                f"video_path must contain 'stitched.mp4' to derive output path, got: {video_path}"
+            )
+
+        workdir = tempfile.mkdtemp(prefix="audio_")
+        try:
+            voiceover_path = self._generate_voiceover(narrative, genre, workdir)
+
+            # Probe video duration so we can compute end-buffer fade timing
+            video_duration = self._probe_duration(video_path)
+            story_window_end = max(narration_start_offset, video_duration - narration_end_buffer)
+
+            print(
+                f"[AudioMixer] Mixing narration ({narration_volume:.2f}) "
+                f"+ native ambient ({ambient_volume:.2f}); "
+                f"narration window: {narration_start_offset:.1f}s - {story_window_end:.1f}s "
+                f"of {video_duration:.1f}s video",
+                flush=True,
+            )
+
+            # Build the narration stream:
+            # 1. Delay it by narration_start_offset (so title card plays clean)
+            # 2. Set its volume
+            # 3. Fade out at the end of the story window (so end card plays clean)
+            vo_filters = []
+            if narration_start_offset > 0:
+                # adelay takes ms per channel
+                delay_ms = int(narration_start_offset * 1000)
+                vo_filters.append(f"adelay={delay_ms}|{delay_ms}")
+            vo_filters.append(f"volume={narration_volume}")
+            if narration_end_buffer > 0 and story_window_end < video_duration:
+                fade_dur = 0.5
+                fade_start = max(0.0, story_window_end - fade_dur)
+                vo_filters.append(f"afade=t=out:st={fade_start}:d={fade_dur}")
+            vo_chain = ",".join(vo_filters)
+
+            filter_complex = (
+                f"[1:a]{vo_chain}[vo];"
+                f"[0:a]volume={ambient_volume}[amb];"
+                f"[vo][amb]amix=inputs=2:duration=longest:dropout_transition=0[aout]"
+            )
+            cmd = [
+                "ffmpeg", "-y",
+                "-i", video_path,
+                "-i", voiceover_path,
+                "-filter_complex", filter_complex,
+                "-map", "0:v", "-map", "[aout]",
+                "-c:v", "copy", "-c:a", "aac", "-shortest",
+                output_path,
+            ]
+
+            subprocess.run(cmd, check=True, capture_output=True)
+            print("[AudioMixer] Narration + native ambient mix complete", flush=True)
+        finally:
+            shutil.rmtree(workdir, ignore_errors=True)
+
+        return output_path
+
+    @staticmethod
+    def _probe_duration(video_path: str) -> float:
+        """Return the duration of a video file in seconds via ffprobe."""
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                video_path,
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return float(result.stdout.strip())

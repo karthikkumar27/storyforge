@@ -156,7 +156,7 @@ When an episode has multiple named characters:
 - Anchor characters to consistent screen positions (LEFT, RIGHT, CENTER) across the episode — see screenplay-director skill
 - For close-ups, use the hero reference of that specific character
 - For wide shots with both, the visual_style + character paragraphs do the work; expect minor drift
-- **Do not introduce new characters in shots 4-6.** New characters belong in shot 1-2 with proper establishing.
+- **Do not introduce BRAND-NEW characters in shots 4-6.** A brand-new character (no prior appearance, no locked paragraph) belongs in shot 1-2 with proper establishing. RECURRING characters from the roster (with a locked paragraph) can appear in any shot — just paste their locked paragraph verbatim wherever they appear.
 
 ---
 

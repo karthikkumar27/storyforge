@@ -1,0 +1,287 @@
+#!/usr/bin/env python3
+"""Manual / à-la-carte episode generator.
+
+Reads a single row from the MAIN GOOGLE_SHEET_ID (not preset-7's dedicated
+sheet), generates a video using Atlas Cloud, and saves the MP4 locally.
+Skips ElevenLabs voiceover, BGM mixing, title/end cards, and YouTube upload —
+the result is just the stitched Seedance shots with their native audio.
+
+Useful for:
+- Ad-hoc tests when you don't want to burn through the preset-7 episode counter
+- Iterating on shots/prompts without spending on narration + upload
+- Generating videos for any preset using YOUR shots written directly in the sheet
+
+Sheet input flexibility (in priority order):
+1. If row has `shots` text in story_brief separated by `|`, use those verbatim
+   (one shot per `|` segment). Bypasses Claude entirely.
+2. Otherwise, runs ScriptGenerator on story_brief to produce shots normally.
+
+Reference image:
+- If `ref_image_url` cell is filled, use it as-is for image-to-video anchoring
+- Otherwise generate a fresh one via GPT Image 2 (~$0.006)
+
+Usage:
+    python scripts/manual_episode.py                # process first 'pending' row
+    python scripts/manual_episode.py --row 5        # process specific row by number
+    python scripts/manual_episode.py --dry-run      # plan only, no API calls
+    python scripts/manual_episode.py --no-storyboards  # use single ref image for all shots
+"""
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+from datetime import datetime
+from pathlib import Path
+
+# Make project root importable
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from dotenv import load_dotenv
+load_dotenv()
+
+import gspread
+
+from config import (
+    SHOT_DURATION, SHOTS_COUNT, ASPECT_RATIO, VIDEO_STYLE,
+    ATLAS_BASE_URL, ATLAS_VIDEO_MODEL_I2V, ATLAS_VIDEO_MODEL_T2V,
+)
+from modules.image_generator import AtlasImageGenerator
+from modules.script_generator import ScriptGenerator
+from modules.video_producer import AtlasVideoProducer
+
+PROJECT_ROOT = Path(__file__).parent.parent
+VIDEOS_DIR = PROJECT_ROOT / "videos" / "manual"
+
+
+def load_main_sheet():
+    creds_dict = json.loads(os.environ["GOOGLE_SHEETS_CREDENTIALS"])
+    sheet_id = os.environ["GOOGLE_SHEET_ID"]
+    sheet = gspread.service_account_from_dict(creds_dict).open_by_key(sheet_id).sheet1
+    return sheet
+
+
+def slugify(text: str, max_len: int = 60) -> str:
+    import re
+    if not text:
+        return "manual-episode"
+    slug = text.replace("—", "-").replace("–", "-")
+    slug = re.sub(r'[\\/*?:"<>|]', "", slug)
+    slug = re.sub(r"\s+", "-", slug.strip())
+    slug = re.sub(r"-+", "-", slug)
+    return slug[:max_len].rstrip("-_") or "manual-episode"
+
+
+def pick_row(sheet, row_arg: int | None) -> tuple[int, dict]:
+    """Return (row_index, row_dict). Row index is 1-based."""
+    records = sheet.get_all_records()
+    if row_arg is not None:
+        # User passed an explicit row number (1-based, header is row 1)
+        if row_arg < 2 or row_arg - 2 >= len(records):
+            raise SystemExit(f"Row {row_arg} is out of range (sheet has {len(records) + 1} rows)")
+        return row_arg, records[row_arg - 2]
+
+    # Auto-pick first pending row
+    for i, row in enumerate(records, start=2):
+        if str(row.get("status", "")).strip().lower() == "pending":
+            return i, row
+
+    raise SystemExit("No 'pending' rows in main sheet. Set status=pending on the row you want to process, or pass --row N.")
+
+
+def parse_inline_shots(story_brief: str) -> list[str] | None:
+    """If the brief contains pipe-separated shots (Shot 1: ... | Shot 2: ...),
+    return them as a list. Otherwise None — caller falls back to ScriptGenerator."""
+    if "|" not in story_brief:
+        return None
+    parts = [p.strip() for p in story_brief.split("|") if p.strip()]
+    if len(parts) >= 2:
+        return parts
+    return None
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--row", type=int, help="Specific 1-based row number to process (default: first pending)")
+    ap.add_argument("--dry-run", action="store_true", help="Plan only — no API calls")
+    ap.add_argument("--no-storyboards", action="store_true",
+                    help="Use single ref image for all shots (skip per-shot GPT Image 2 Edit). Cheaper but may show character drift.")
+    args = ap.parse_args()
+
+    sheet = load_main_sheet()
+    row_idx, row = pick_row(sheet, args.row)
+
+    title = str(row.get("title", "")).strip() or "(untitled)"
+    story_brief = str(row.get("story_brief", "")).strip()
+    genre = str(row.get("genre", "")).strip() or "manual"
+    ref_image_url = str(row.get("ref_image_url", "")).strip()
+
+    if not story_brief:
+        raise SystemExit(f"Row {row_idx} has no story_brief. Add one and re-run.")
+
+    print(f"=== MANUAL EPISODE — row {row_idx} ===")
+    print(f"  Title:     {title}")
+    print(f"  Genre:     {genre}")
+    print(f"  Brief:     {story_brief[:100]}{'...' if len(story_brief) > 100 else ''}")
+    print(f"  Ref image: {ref_image_url[:80] + '...' if ref_image_url else '(will generate)'}")
+
+    inline_shots = parse_inline_shots(story_brief)
+    if inline_shots:
+        print(f"  Shots:     {len(inline_shots)} inline (parsed from `|`-separated story_brief)")
+    else:
+        print(f"  Shots:     will run ScriptGenerator on story_brief")
+
+    # Cost preview
+    n_shots = len(inline_shots) if inline_shots else SHOTS_COUNT
+    storyboard_cost = 0.0 if args.no_storyboards else n_shots * 0.006
+    image_gen_cost = 0.0 if ref_image_url else 0.006
+    seedance_cost_per_clip = 0.144 if SHOT_DURATION == 8 else 0.18
+    video_cost = n_shots * seedance_cost_per_clip
+    script_cost = 0.0 if inline_shots else 0.025
+    total = storyboard_cost + image_gen_cost + video_cost + script_cost
+
+    print(f"\n=== ESTIMATED COST ===")
+    if not inline_shots:
+        print(f"  Script generation:           ${script_cost:.3f}")
+    if not ref_image_url:
+        print(f"  Reference image:             ${image_gen_cost:.3f}")
+    if not args.no_storyboards:
+        print(f"  Per-shot storyboards ({n_shots}):    ${storyboard_cost:.3f}")
+    print(f"  Video clips ({n_shots} × {SHOT_DURATION}s):       ${video_cost:.3f}")
+    print(f"  ─────────────────────────────")
+    print(f"  TOTAL:                        ${total:.3f}")
+
+    if args.dry_run:
+        print("\nDry run — no API calls.")
+        return
+
+    confirm = input("\nProceed? [y/N] ").strip().lower()
+    if confirm not in ("y", "yes"):
+        print("Cancelled.")
+        return
+
+    # ===== 1. Resolve shots and visual style =====
+    if inline_shots:
+        shots = inline_shots
+        visual_style = ""
+    else:
+        print("\n[1/4] Generating script...")
+        script_result = ScriptGenerator().generate(story_brief, genre)
+        shots = script_result["shots"]
+        visual_style = script_result.get("visual_style", "")
+        print(f"      → {len(shots)} shots produced")
+
+    # ===== 2. Resolve reference image =====
+    if not ref_image_url:
+        print("\n[2/4] Generating reference image...")
+        if inline_shots:
+            char_prompt = (
+                f"A single-character 9:16 vertical {VIDEO_STYLE} portrait "
+                f"based on this scene description: {shots[0][:300]}"
+            )
+        else:
+            char_prompt = script_result.get(
+                "character_image_prompt",
+                f"9:16 vertical reference for {genre} short film, cinematic, no text",
+            )
+        ref_image_url = AtlasImageGenerator().generate(char_prompt)
+        # Write back to sheet so reruns reuse it
+        try:
+            headers = sheet.row_values(1)
+            if "ref_image_url" in headers:
+                sheet.update_cell(row_idx, headers.index("ref_image_url") + 1, ref_image_url)
+        except Exception:
+            pass
+        print(f"      → {ref_image_url[:80]}...")
+    else:
+        print("\n[2/4] Using existing ref_image_url from sheet")
+
+    # ===== 3. Per-shot storyboards (optional) =====
+    storyboard_urls = None
+    if not args.no_storyboards:
+        print(f"\n[3/4] Generating {len(shots)} per-shot storyboards...")
+        storyboard_urls = []
+        edit_gen = AtlasImageGenerator()
+        for i, shot_prompt in enumerate(shots):
+            # POV / wide-exterior / environmental shots intentionally don't show
+            # the main character — keep this in sync with orchestrator.py.
+            low = shot_prompt.lower()
+            character_absent = any(m in low for m in (
+                "pov shot", "pov push", "pov dolly",
+                "extreme wide", "ews ", "ews,", "ews.",
+                "from outside the ship", "outside the ship",
+                "no character", "character is not visible", "character not visible",
+                "camera pushes through", "camera dollies forward into",
+                "the world widening", "the ship growing smaller",
+            ))
+            if character_absent:
+                edit_prompt = (
+                    f"Use the reference image as a STYLE anchor only — preserve the illustration "
+                    f"style, color palette, and world established in the reference. The main character "
+                    f"should NOT be in frame (this is a POV, wide-exterior, or environmental shot). "
+                    f"Render the scene exactly as described, 9:16 vertical, at the START of the "
+                    f"action, no motion blur. Scene: {shot_prompt}"
+                )
+            else:
+                edit_prompt = (
+                    f"Use the reference image as the base — preserve the main character's identity, "
+                    f"outfit, and illustration style exactly. Render this scene as a 9:16 vertical "
+                    f"still frame at the START of the action, no motion blur. If the shot prompt "
+                    f"names other characters or entities (a holographic AI, another person, a creature), "
+                    f"include them rendered as the prompt describes. Scene: {shot_prompt}"
+                )
+            try:
+                sb = edit_gen.edit_image(ref_image_url, edit_prompt)
+                storyboard_urls.append(sb)
+                print(f"      shot {i+1}/{len(shots)} ✓")
+            except Exception as exc:
+                print(f"      shot {i+1}/{len(shots)} FAILED ({exc}) — falling back to single ref")
+                storyboard_urls.append(None)
+    else:
+        print("\n[3/4] Skipping per-shot storyboards (--no-storyboards)")
+
+    # ===== 4. Video generation + stitch =====
+    print("\n[4/4] Generating video shots...")
+    producer = AtlasVideoProducer()
+    # Prepend visual_style to each shot prompt if present (matches main pipeline)
+    if visual_style:
+        shots = [f"{visual_style} {s}" for s in shots]
+    stitched_path = producer.produce(
+        shots,
+        reference_image_url=ref_image_url,
+        storyboard_urls=storyboard_urls,
+    )
+    print(f"      → stitched: {stitched_path}")
+
+    # ===== Archive =====
+    VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d-%H%M")
+    slug = slugify(title)
+    dest = VIDEOS_DIR / f"{ts}_{slug}.mp4"
+    shutil.copy2(stitched_path, dest)
+
+    # Update sheet
+    try:
+        headers = sheet.row_values(1)
+        if "status" in headers:
+            sheet.update_cell(row_idx, headers.index("status") + 1, "manual_done")
+    except Exception:
+        pass
+
+    print(f"\n=== DONE ===")
+    print(f"  Saved to: {dest}")
+    print(f"  Size:     {dest.stat().st_size / 1024 / 1024:.1f} MB")
+    duration = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+         "-of", "default=noprint_wrappers=1:nokey=1", str(dest)],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    print(f"  Duration: {duration}s")
+    print(f"  Sheet status updated to 'manual_done'")
+    print(f"\n  Open with: open {dest}")
+
+
+if __name__ == "__main__":
+    main()

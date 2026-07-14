@@ -24,17 +24,21 @@ class AtlasImageGenerator:
             "Content-Type": "application/json",
         }
 
-    def generate(self, prompt: str) -> str:
+    def generate(self, prompt: str, model: str | None = None) -> str:
+        # Allow per-call model override so presets can pick a more permissive
+        # image model (e.g. preset-8 drone shorts uses bytedance/seedream-v4.5
+        # because GPT Image 2's content filter rejects "drone" prompts).
+        chosen_model = model or ATLAS_IMAGE_MODEL
         for attempt in range(MAX_RETRIES):
             current_prompt = prompt if attempt == 0 else f"{SAFE_PREFIX}{prompt}"
-            print(f"[ImageGenerator] Atlas GPT Image 2 — attempt {attempt + 1}/{MAX_RETRIES}...", flush=True)
+            print(f"[ImageGenerator] Atlas image gen ({chosen_model}) — attempt {attempt + 1}/{MAX_RETRIES}...", flush=True)
 
             try:
                 resp = httpx.post(
                     f"{ATLAS_BASE_URL}/model/generateImage",
                     headers=self.headers,
                     json={
-                        "model": ATLAS_IMAGE_MODEL,
+                        "model": chosen_model,
                         "prompt": current_prompt,
                         "width": 768,
                         "height": 1344,
@@ -51,7 +55,11 @@ class AtlasImageGenerator:
                 prediction_id = resp.json()["data"]["id"]
                 print(f"[ImageGenerator] Task created: {prediction_id}", flush=True)
 
-                # Poll for result
+                # Poll for result. Atlas surfaces task-side failures (content
+                # filter, model errors, fetch failures) as HTTP 400 on the
+                # prediction endpoint with the actual cause in the body.
+                # Without explicit handling, raise_for_status() throws the body
+                # away — same gap that bit us on edit_image earlier.
                 for poll in range(ATLAS_MAX_POLL_ATTEMPTS):
                     poll_resp = httpx.get(
                         f"{ATLAS_BASE_URL}/model/prediction/{prediction_id}",
@@ -62,6 +70,15 @@ class AtlasImageGenerator:
                         print(f"[ImageGenerator] HTTP {poll_resp.status_code}, backing off 30s...", flush=True)
                         time.sleep(30)
                         continue
+                    if poll_resp.status_code == 400:
+                        body = poll_resp.text[:400]
+                        # Detect content-filter rejections so the outer retry
+                        # loop can re-attempt with the SAFE_PREFIX softening.
+                        if "content safety" in body.lower() or "safety policy" in body.lower():
+                            print(f"[ImageGenerator] Poll 400 — content safety policy. Body: {body}", flush=True)
+                            raise RuntimeError(f"Atlas image content-filter rejection: {body}")
+                        print(f"[ImageGenerator] Poll 400 — body: {body}", flush=True)
+                        raise RuntimeError(f"Atlas image task failed (HTTP 400): {body}")
                     poll_resp.raise_for_status()
                     data = poll_resp.json()["data"]
 
@@ -100,7 +117,7 @@ class AtlasImageGenerator:
         publicly-accessible URL (not a file upload).
         """
         for attempt in range(MAX_RETRIES):
-            print(f"[ImageGenerator] GPT Image 2 Edit — attempt {attempt + 1}/{MAX_RETRIES}...", flush=True)
+            print(f"[ImageGenerator] GPT Image 2 Edit — attempt {attempt + 1}/{MAX_RETRIES} — base: {base_image_url}", flush=True)
 
             try:
                 resp = httpx.post(
@@ -123,8 +140,13 @@ class AtlasImageGenerator:
                     raise RuntimeError(f"Atlas image edit failed: HTTP {resp.status_code} — {resp.text[:500]}")
 
                 prediction_id = resp.json()["data"]["id"]
+                print(f"[ImageGenerator] Edit task created: {prediction_id}", flush=True)
 
-                # Poll for completion
+                # gpt-image-2/edit typically takes 90-120s end-to-end. Atlas's
+                # prediction endpoint occasionally returns a transient 400 mid-flight
+                # (gateway race, not a real validation error since we just got a
+                # prediction id back). Treat up to 3 consecutive 400s as retryable.
+                consecutive_400 = 0
                 for poll in range(ATLAS_MAX_POLL_ATTEMPTS):
                     poll_resp = httpx.get(
                         f"{ATLAS_BASE_URL}/model/prediction/{prediction_id}",
@@ -132,9 +154,18 @@ class AtlasImageGenerator:
                         timeout=30,
                     )
                     if poll_resp.status_code in (429, 500, 502, 503, 504):
+                        print(f"[ImageGenerator] Edit poll HTTP {poll_resp.status_code}, backing off 30s...", flush=True)
                         time.sleep(30)
                         continue
+                    if poll_resp.status_code == 400:
+                        consecutive_400 += 1
+                        print(f"[ImageGenerator] Edit poll HTTP 400 (#{consecutive_400}/3) — body: {poll_resp.text[:300]}", flush=True)
+                        if consecutive_400 >= 3:
+                            raise RuntimeError(f"Atlas image edit returned 400 three times in a row: {poll_resp.text[:300]}")
+                        time.sleep(5)
+                        continue
                     poll_resp.raise_for_status()
+                    consecutive_400 = 0
                     data = poll_resp.json()["data"]
                     if data["status"] == "completed":
                         outputs = data.get("outputs", [])
@@ -146,11 +177,12 @@ class AtlasImageGenerator:
                     if data["status"] == "failed":
                         error = data.get("error", "unknown")
                         raise RuntimeError(f"Atlas image edit task failed: {error}")
-                    time.sleep(2)
+                    time.sleep(3)  # Edits run ~100s; 3s cadence keeps load light
                 else:
-                    raise TimeoutError(f"Edit polling timed out")
+                    raise TimeoutError(f"Edit polling timed out after {ATLAS_MAX_POLL_ATTEMPTS} attempts (~{ATLAS_MAX_POLL_ATTEMPTS * 3}s)")
 
-            except (RuntimeError, TimeoutError):
+            except (RuntimeError, TimeoutError, httpx.HTTPStatusError) as exc:
+                print(f"[ImageGenerator] Edit attempt {attempt + 1} failed: {exc}", flush=True)
                 if attempt == MAX_RETRIES - 1:
                     raise
                 continue

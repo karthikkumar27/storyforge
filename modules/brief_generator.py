@@ -90,6 +90,55 @@ Return ONLY valid JSON:
 No markdown. No explanation.{form_instruction}"""
 
 
+# Hard override appended when generating the LAST part of a bounded series
+# (e.g. Part 3 of a 3-part trilogy for preset-1/3). The soft "Final part:
+# satisfying conclusion with an unexpected twist" bullet in SERIES_TEMPLATE
+# is not assertive enough — Claude tends to over-index on "unexpected twist"
+# and ends on a new mystery (which demands a Part 4 that will never exist).
+# This block is the closer.
+FINAL_PART_RULES = """
+
+============================================================
+THIS IS THE FINAL PART. THE STORY ENDS HERE.
+Treat it like the end of a movie, not the end of an episode.
+============================================================
+
+ABSOLUTE RULES FOR THIS BRIEF:
+
+1. RESOLVE every open mystery from the previous parts. Re-read the FULL SCRIPT
+   of each previous part below and list (silently to yourself) every question
+   the audience is now asking — who, what, why, how. Your brief must give an
+   answer or a clear emotional close to each one.
+
+2. DO NOT introduce any NEW character, mystery, or question that isn't
+   immediately answered in THIS SAME brief. A new figure appearing in the last
+   shot is a sequel hook, not an ending.
+
+3. DO NOT end on a setup sentence. Forbidden endings include:
+   - "she knew this was only the beginning"
+   - "what happened next would change everything"
+   - "she looked up — and that's when she saw…"
+   - "she already knew she wouldn't listen"
+   - Any final line that creates anticipation for a Part 4.
+
+4. The final beat MUST be a CLOSER. Closers look like:
+   - A decisive action that ends the conflict ("she pulled the trigger")
+   - A realisation that completes the mystery ("the mineral wasn't dreaming —
+     she was")
+   - A quiet emotional landing ("she finally let go and walked into the light")
+   - A reveal that recontextualises everything ("the warning had been from
+     herself — and she had always been the thing she was warning against")
+
+5. An UNEXPECTED TWIST is welcome — but only as a twist in HOW THINGS RESOLVE,
+   not as a brand-new puzzle. The twist must come WITH the resolution, not
+   instead of it.
+
+VERIFY before returning JSON: read your story_brief's last sentence aloud.
+Does it feel like the end of a movie, or the start of the next scene?
+If the latter, REWRITE THE BRIEF before answering.
+"""
+
+
 # Extra instruction injected ONLY for preset-7 — asks Claude to declare which
 # form the main character is in for this episode, so the pipeline can pick the
 # right reference image (Alan vs Zenith).
@@ -112,9 +161,64 @@ class BriefGenerator:
         past_stories: list[dict] | None = None,
         episode_number: int | None = None,
     ) -> dict:
+        # Single-shot native presets (e.g. preset-8 Drone Shorts) don't have
+        # stories or shot lists. They produce one Seedance 2.0 prompt per video.
+        from config import _preset
+        if _preset.get("pipeline_mode") == "single_shot_native":
+            return self._generate_single_shot_prompt(past_stories or [])
+
         if STORY_MODE == "series":
             return self._generate_series(previous_parts or [], past_stories or [], episode_number)
         return self._generate_standalone(past_stories or [])
+
+    def _generate_single_shot_prompt(self, past_stories: list[dict]) -> dict:
+        """For single_shot_native presets: produce ONE video-gen prompt that
+        Seedance will consume directly. No story, no shots, no script — the
+        story_brief IS the Seedance prompt.
+
+        For preset-8 (Cinematic Drone), the GENRES list IS the set of scenario
+        archetypes (urban-chase / wildlife-encounter / impossible-vista /
+        human-reaction). Picking one at random per video routes Claude to the
+        matching archetype block in BRIEF_SYSTEM_CONTEXT.
+
+        Returns: {"story_brief": <prompt>, "genre": <scenario tag>,
+                  "title_hint": <3-5 word YouTube title>, "story_mode": "standalone"}
+        """
+        subject = random.choice(GENRES)
+        seed = f"{date.today().isoformat()}-{random.randint(1000, 9999)}"
+
+        anti_rep = self._build_anti_repetition(past_stories)
+        system_template = (
+            f"{BRIEF_SYSTEM_CONTEXT}\n\n"
+            f"{anti_rep}\n\n"
+            f"Return ONLY valid JSON in this exact shape:\n"
+            f'{{"story_brief": "<the full 80-140 word Seedance prompt, one paragraph>", '
+            f'"genre": "{subject}", '
+            f'"title_hint": "<3-5 word evocative YouTube Shorts title, no emojis>"}}\n\n'
+            f"No markdown. No explanation."
+        )
+        user = (
+            f"Today's seed: {seed}\n"
+            f"SCENARIO ASSIGNED: {subject.upper()}\n\n"
+            f"Use the {subject.upper()} archetype from your system prompt — match its tone, "
+            f"its motion shape, and its audio cues. Pick a SPECIFIC location, subject, and "
+            f"moment that fits this archetype. The clip must end MID-ACTION (do not resolve, "
+            f"do not cut to black, do not slow to a stop — the camera is still moving when the "
+            f"12 seconds elapse). Return JSON only."
+        )
+        print(f"[BriefGenerator] Cinematic drone — scenario: {subject}", flush=True)
+
+        message = self.client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=600,
+            system=system_template,
+            messages=[{"role": "user", "content": user}],
+        )
+        raw = message.content[0].text
+        print(f"[BriefGenerator] raw response: {raw[:400]!r}", flush=True)
+        result = _extract_json(raw)
+        result["story_mode"] = "standalone"
+        return result
 
     @staticmethod
     def _build_anti_repetition(past_stories: list[dict]) -> str:
@@ -167,13 +271,36 @@ class BriefGenerator:
         part_number = len(previous_parts) + 1
         genre = random.choice(GENRES)
         series_id = previous_parts[0]["series_id"] if previous_parts else f"series-{date.today().isoformat()}-{random.randint(1000, 9999)}"
+        # Final part of a bounded series — used to swap in stricter closure
+        # rules and pass the prior scripts (not just briefs) so Claude can see
+        # which threads need to be resolved.
+        is_final_part = (SERIES_PARTS > 0 and part_number == SERIES_PARTS)
 
         if previous_parts:
-            recap = "\n".join(
-                f"Part {i+1}: {p.get('story_brief', 'N/A')}"
-                for i, p in enumerate(previous_parts)
-            )
-            series_context = f"PREVIOUS PARTS (continue this story):\n{recap}\n\nNow write Part {part_number}. Build on what happened before."
+            if is_final_part:
+                # Include the full script text of each prior part so Claude
+                # can identify the open mysteries it must resolve. Briefs
+                # alone are too vague to support a real conclusion.
+                recap_blocks = []
+                for i, p in enumerate(previous_parts):
+                    block = [f"--- Part {i+1} ---"]
+                    block.append(f"BRIEF: {p.get('story_brief', 'N/A')}")
+                    script = (p.get("script_text") or "").strip()
+                    if script:
+                        block.append(f"FULL SCRIPT: {script}")
+                    recap_blocks.append("\n".join(block))
+                recap = "\n\n".join(recap_blocks)
+                series_context = (
+                    f"PREVIOUS PARTS (with full scripts — these are the threads you MUST close):\n\n"
+                    f"{recap}\n\n"
+                    f"Now write Part {part_number} — the FINAL part. End the story."
+                )
+            else:
+                recap = "\n".join(
+                    f"Part {i+1}: {p.get('story_brief', 'N/A')}"
+                    for i, p in enumerate(previous_parts)
+                )
+                series_context = f"PREVIOUS PARTS (continue this story):\n{recap}\n\nNow write Part {part_number}. Build on what happened before."
         else:
             anti_rep = self._build_anti_repetition(past_stories)
             series_context = (
@@ -219,6 +346,11 @@ class BriefGenerator:
         prefix_blocks = [b for b in (arc_context_block, characters_block) if b]
         if prefix_blocks:
             system = "\n\n".join(prefix_blocks) + "\n\n" + system
+
+        # Append the strict closure rules LAST so they're the final thing Claude
+        # reads before generating — highest recency/salience in the prompt.
+        if is_final_part:
+            system = system + FINAL_PART_RULES
 
         seed = f"{date.today().isoformat()}-{random.randint(1000, 9999)}"
         ep_label = f"Episode {episode_number}" if episode_number else f"Part {part_number} of {SERIES_PARTS}"

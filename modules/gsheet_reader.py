@@ -25,13 +25,14 @@ class GSheetReader:
                     "title": row.get("title", ""),
                     "story_brief": row["story_brief"],
                     "genre": row.get("genre", "blend"),
-                    "duration_sec": int(row.get("duration_sec", 75)),
+                    "duration_sec": int(row.get("duration_sec") or 75),
                     "series_id": row.get("series_id", ""),
                     "part_number": row.get("part_number", ""),
                     "story_mode": row.get("story_mode", "standalone"),
                     "arc_number": row.get("arc_number", ""),
                     "episode_number": row.get("episode_number", ""),
                     "character_form": row.get("character_form", ""),
+                    "ref_image_url": row.get("ref_image_url", ""),
                 }
         return None
 
@@ -119,7 +120,7 @@ class GSheetReader:
         for row in records:
             if row.get("series_id") == series_id and row.get("status") == "done":
                 parts.append(row)
-        parts.sort(key=lambda r: int(r.get("part_number", 0)))
+        parts.sort(key=lambda r: int(r.get("part_number") or 0))
         return parts
 
     def get_latest_incomplete_series(self) -> str | None:
