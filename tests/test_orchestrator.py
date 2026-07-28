@@ -2,6 +2,15 @@
 import pytest
 from unittest.mock import MagicMock, patch
 
+from config import _preset
+
+# run_pipeline() branches to a completely different flow for presets that
+# generate a whole video in one call (preset-8). These tests exercise the
+# shot-assembly flow, so skip them rather than assert nonsense under preset-8.
+requires_shot_pipeline = pytest.mark.skipif(
+    _preset.get("pipeline_mode") == "single_shot_native",
+    reason="active preset uses the single-shot native flow",
+)
 
 SCRIPT_RESULT = {
     "narrative": "In the void...",
@@ -12,11 +21,19 @@ SCRIPT_RESULT = {
 }
 
 
+def _wire_audio(mock_audio):
+    """The orchestrator picks mix() or mix_with_native_audio() based on the
+    preset's audio_mix config. Wire both so these tests don't depend on which."""
+    mock_audio.return_value.mix.return_value = "/tmp/final.mp4"
+    mock_audio.return_value.mix_with_native_audio.return_value = "/tmp/final.mp4"
+
+
+@requires_shot_pipeline
 @patch("orchestrator.YouTubeUploader")
 @patch("orchestrator.AudioMixer")
-@patch("orchestrator.VideoProducer")
+@patch("orchestrator.create_video_producer")
 @patch("orchestrator.ScriptGenerator")
-@patch("orchestrator.GSheetReader")
+@patch("orchestrator.get_episode_reader")
 def test_run_pipeline_returns_done_with_url(
     MockReader, MockScript, MockVideo, MockAudio, MockYouTube
 ):
@@ -30,7 +47,7 @@ def test_run_pipeline_returns_done_with_url(
     }
     MockScript.return_value.generate.return_value = SCRIPT_RESULT
     MockVideo.return_value.produce.return_value = "/tmp/stitched.mp4"
-    MockAudio.return_value.mix.return_value = "/tmp/final.mp4"
+    _wire_audio(MockAudio)
     MockYouTube.return_value.upload.return_value = "https://youtube.com/watch?v=abc"
 
     from orchestrator import run_pipeline
@@ -41,8 +58,9 @@ def test_run_pipeline_returns_done_with_url(
     mock_reader.update_done.assert_called_once_with(2, "https://youtube.com/watch?v=abc")
 
 
+@requires_shot_pipeline
 @patch("orchestrator.BriefGenerator")
-@patch("orchestrator.GSheetReader")
+@patch("orchestrator.get_episode_reader")
 def test_run_pipeline_returns_no_pending_when_sheet_empty(MockReader, MockBrief):
     # Both calls to get_pending_row return None (even after brief generation attempt)
     MockReader.return_value.get_pending_row.return_value = None
@@ -58,11 +76,12 @@ def test_run_pipeline_returns_no_pending_when_sheet_empty(MockReader, MockBrief)
     assert result["status"] == "no_pending_rows"
 
 
+@requires_shot_pipeline
 @patch("orchestrator.YouTubeUploader")
 @patch("orchestrator.AudioMixer")
-@patch("orchestrator.VideoProducer")
+@patch("orchestrator.create_video_producer")
 @patch("orchestrator.ScriptGenerator")
-@patch("orchestrator.GSheetReader")
+@patch("orchestrator.get_episode_reader")
 def test_run_pipeline_writes_error_on_script_failure(
     MockReader, MockScript, MockVideo, MockAudio, MockYouTube
 ):
@@ -79,11 +98,12 @@ def test_run_pipeline_writes_error_on_script_failure(
     mock_reader.update_error.assert_called_once_with(2, "Claude API down")
 
 
+@requires_shot_pipeline
 @patch("orchestrator.YouTubeUploader")
 @patch("orchestrator.AudioMixer")
-@patch("orchestrator.VideoProducer")
+@patch("orchestrator.create_video_producer")
 @patch("orchestrator.ScriptGenerator")
-@patch("orchestrator.GSheetReader")
+@patch("orchestrator.get_episode_reader")
 def test_run_pipeline_sets_status_generating_before_script(
     MockReader, MockScript, MockVideo, MockAudio, MockYouTube
 ):
@@ -93,7 +113,7 @@ def test_run_pipeline_sets_status_generating_before_script(
     }
     MockScript.return_value.generate.return_value = SCRIPT_RESULT
     MockVideo.return_value.produce.return_value = "/tmp/stitched.mp4"
-    MockAudio.return_value.mix.return_value = "/tmp/final.mp4"
+    _wire_audio(MockAudio)
     MockYouTube.return_value.upload.return_value = "https://youtube.com/watch?v=xyz"
 
     from orchestrator import run_pipeline
@@ -103,12 +123,13 @@ def test_run_pipeline_sets_status_generating_before_script(
     assert status_calls == ["generating", "uploading"]
 
 
+@requires_shot_pipeline
 @patch("orchestrator.YouTubeUploader")
 @patch("orchestrator.AudioMixer")
-@patch("orchestrator.VideoProducer")
+@patch("orchestrator.create_video_producer")
 @patch("orchestrator.ScriptGenerator")
 @patch("orchestrator.BriefGenerator")
-@patch("orchestrator.GSheetReader")
+@patch("orchestrator.get_episode_reader")
 def test_run_pipeline_generates_brief_when_no_pending(
     MockReader, MockBrief, MockScript, MockVideo, MockAudio, MockYouTube
 ):
@@ -129,7 +150,7 @@ def test_run_pipeline_generates_brief_when_no_pending(
         "description": "desc", "tags": ["scifi"], "shots": ["shot1"],
     }
     MockVideo.return_value.produce.return_value = "/tmp/stitched.mp4"
-    MockAudio.return_value.mix.return_value = "/tmp/final.mp4"
+    _wire_audio(MockAudio)
     MockYouTube.return_value.upload.return_value = "https://youtube.com/watch?v=xyz"
 
     from orchestrator import run_pipeline

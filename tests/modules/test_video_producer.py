@@ -9,11 +9,12 @@ def test_submit_shot_returns_task_id(mock_httpx, monkeypatch):
     monkeypatch.setenv("KLING_SECRET_KEY", "secret456")
 
     mock_resp = MagicMock()
+    mock_resp.status_code = 200  # _submit_shot raises on >= 400
     mock_resp.json.return_value = {"data": {"task_id": "task_abc"}}
     mock_httpx.post.return_value = mock_resp
 
-    from modules.video_producer import VideoProducer
-    producer = VideoProducer()
+    from modules.video_producer import KlingVideoProducer
+    producer = KlingVideoProducer()
     task_id = producer._submit_shot("Slow orbital pan, deep space black, nebula glow")
 
     assert task_id == "task_abc"
@@ -31,8 +32,8 @@ def test_poll_shot_returns_url_when_succeed(mock_httpx, monkeypatch):
     }
     mock_httpx.get.return_value = mock_resp
 
-    from modules.video_producer import VideoProducer
-    producer = VideoProducer()
+    from modules.video_producer import KlingVideoProducer
+    producer = KlingVideoProducer()
     url = producer._poll_shot("task_abc")
 
     assert url == "https://cdn.kling.ai/v.mp4"
@@ -47,8 +48,8 @@ def test_poll_shot_raises_on_failed_status(mock_httpx, monkeypatch):
     mock_resp.json.return_value = {"data": {"task_status": "failed"}}
     mock_httpx.get.return_value = mock_resp
 
-    from modules.video_producer import VideoProducer
-    producer = VideoProducer()
+    from modules.video_producer import KlingVideoProducer
+    producer = KlingVideoProducer()
 
     with pytest.raises(RuntimeError, match="failed"):
         producer._poll_shot("task_abc")
@@ -59,8 +60,8 @@ def test_stitch_writes_concat_file_and_calls_ffmpeg(mock_run, monkeypatch, tmp_p
     monkeypatch.setenv("KLING_ACCESS_KEY_ID", "key123")
     monkeypatch.setenv("KLING_SECRET_KEY", "secret456")
 
-    from modules.video_producer import VideoProducer
-    producer = VideoProducer()
+    from modules.video_producer import KlingVideoProducer
+    producer = KlingVideoProducer()
     clip_paths = [str(tmp_path / "shot_00.mp4"), str(tmp_path / "shot_01.mp4")]
     output = str(tmp_path / "stitched.mp4")
 
@@ -77,10 +78,10 @@ def test_jwt_token_contains_access_key_id(monkeypatch):
     monkeypatch.setenv("KLING_ACCESS_KEY_ID", "my_key_id")
     monkeypatch.setenv("KLING_SECRET_KEY", "my_secret")
 
-    from modules.video_producer import VideoProducer
+    from modules.video_producer import KlingVideoProducer
     import jwt
 
-    producer = VideoProducer()
+    producer = KlingVideoProducer()
     token = producer._jwt_token()
     decoded = jwt.decode(token, "my_secret", algorithms=["HS256"])
 

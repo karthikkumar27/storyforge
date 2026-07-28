@@ -69,5 +69,13 @@ def test_upload_uses_script_title_and_description(
     call_kwargs = mock_youtube.videos.return_value.insert.call_args.kwargs
     snippet = call_kwargs["body"]["snippet"]
     assert snippet["title"] == "The Last Signal"
-    assert snippet["description"] == "A haunting journey through deep space."
     assert snippet["tags"] == ["scifi", "space", "horror", "cinematic", "shortfilm"]
+
+    # _build_description prepends hashtags (preset's youtube_hashtags, then
+    # DEFAULT_HASHTAGS) above the script's description so the first three render
+    # as clickable chips on mobile. The script text is preserved verbatim below.
+    hashtag_line, blank, body = snippet["description"].split("\n", 2)
+    assert body == "A haunting journey through deep space."
+    assert blank == ""
+    assert all(tag.startswith("#") for tag in hashtag_line.split())
+    assert "#ai" in hashtag_line.split()

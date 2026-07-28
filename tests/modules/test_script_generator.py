@@ -67,5 +67,9 @@ def test_generate_raises_on_invalid_json(mock_anthropic_class, monkeypatch):
     from modules.script_generator import ScriptGenerator
     gen = ScriptGenerator()
 
-    with pytest.raises(json.JSONDecodeError):
+    # _extract_json raises ValueError with a diagnostic message when the response
+    # contains no JSON object at all. (json.JSONDecodeError, raised when a braced
+    # region is found but is malformed, is a subclass of ValueError — so this
+    # assertion covers both failure shapes.)
+    with pytest.raises(ValueError, match="No JSON object found"):
         gen.generate("brief", "sci-fi")
