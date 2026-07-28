@@ -328,29 +328,37 @@ class EpisodeLedger:
         self._tab.append_row(values)
 
 
-def get_episode_ledger(session: SheetSession | None = None) -> EpisodeLedger:
+def get_episode_ledger(
+    session: SheetSession | None = None,
+    sheet_env: str | None = None,
+) -> EpisodeLedger:
     """Build the ledger for the active preset.
 
     This is the only place preset knowledge enters — EpisodeLedger itself takes
     a LedgerSpec and imports nothing from config, so tests can construct one
     without touching the environment.
+
+    `sheet_env` overrides the preset's sheet routing. Pass "GOOGLE_SHEET_ID" for
+    tools that always work against the main sheet regardless of which preset is
+    active (e.g. scripts/manual_episode.py).
     """
     import os
     from config import ACTIVE_PRESET, GENRES, STORY_MODE, SERIES_PARTS
 
     session = session or SheetSession()
 
-    sheet_env = "GOOGLE_SHEET_ID"
-    if ACTIVE_PRESET == "preset-7":
-        if "ALAN_STORY_GOOGLE_SHEET_ID" in os.environ:
-            sheet_env = "ALAN_STORY_GOOGLE_SHEET_ID"
-            print("[Ledger] Using Alan Story sheet (preset-7)", flush=True)
-        else:
-            print(
-                "[Ledger] WARNING: ALAN_STORY_GOOGLE_SHEET_ID not set; "
-                "falling back to GOOGLE_SHEET_ID",
-                flush=True,
-            )
+    if sheet_env is None:
+        sheet_env = "GOOGLE_SHEET_ID"
+        if ACTIVE_PRESET == "preset-7":
+            if "ALAN_STORY_GOOGLE_SHEET_ID" in os.environ:
+                sheet_env = "ALAN_STORY_GOOGLE_SHEET_ID"
+                print("[Ledger] Using Alan Story sheet (preset-7)", flush=True)
+            else:
+                print(
+                    "[Ledger] WARNING: ALAN_STORY_GOOGLE_SHEET_ID not set; "
+                    "falling back to GOOGLE_SHEET_ID",
+                    flush=True,
+                )
 
     spec = LedgerSpec(
         genres=tuple(GENRES),

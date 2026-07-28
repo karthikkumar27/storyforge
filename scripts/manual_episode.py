@@ -27,12 +27,9 @@ Usage:
     python scripts/manual_episode.py --no-storyboards  # use single ref image for all shots
 """
 import argparse
-import json
-import os
 import shutil
 import subprocess
 import sys
-import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -42,25 +39,18 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from dotenv import load_dotenv
 load_dotenv()
 
-import gspread
-
 from config import (
     SHOT_DURATION, SHOTS_COUNT, ASPECT_RATIO, VIDEO_STYLE,
     ATLAS_BASE_URL, ATLAS_VIDEO_MODEL_I2V, ATLAS_VIDEO_MODEL_T2V,
 )
+from modules.episode_ledger import get_episode_ledger
+from modules.sheet_access import SheetSession
 from modules.image_generator import AtlasImageGenerator
 from modules.script_generator import ScriptGenerator
 from modules.video_producer import AtlasVideoProducer
 
 PROJECT_ROOT = Path(__file__).parent.parent
 VIDEOS_DIR = PROJECT_ROOT / "videos" / "manual"
-
-
-def load_main_sheet():
-    creds_dict = json.loads(os.environ["GOOGLE_SHEETS_CREDENTIALS"])
-    sheet_id = os.environ["GOOGLE_SHEET_ID"]
-    sheet = gspread.service_account_from_dict(creds_dict).open_by_key(sheet_id).sheet1
-    return sheet
 
 
 def slugify(text: str, max_len: int = 60) -> str:
@@ -74,21 +64,23 @@ def slugify(text: str, max_len: int = 60) -> str:
     return slug[:max_len].rstrip("-_") or "manual-episode"
 
 
-def pick_row(sheet, row_arg: int | None) -> tuple[int, dict]:
+def pick_row(ledger, row_arg: int | None) -> tuple[int, dict]:
     """Return (row_index, row_dict). Row index is 1-based."""
-    records = sheet.get_all_records()
     if row_arg is not None:
         # User passed an explicit row number (1-based, header is row 1)
-        if row_arg < 2 or row_arg - 2 >= len(records):
-            raise SystemExit(f"Row {row_arg} is out of range (sheet has {len(records) + 1} rows)")
-        return row_arg, records[row_arg - 2]
+        try:
+            return row_arg, ledger.row(row_arg)
+        except IndexError as exc:
+            raise SystemExit(str(exc))
 
-    # Auto-pick first pending row
-    for i, row in enumerate(records, start=2):
-        if str(row.get("status", "")).strip().lower() == "pending":
-            return i, row
-
-    raise SystemExit("No 'pending' rows in main sheet. Set status=pending on the row you want to process, or pass --row N.")
+    # Auto-pick first pending row — same claim the pipeline would make
+    claim = ledger.claim_next()
+    if claim.episode is None:
+        raise SystemExit(
+            "No 'pending' rows in main sheet. Set status=pending on the row you "
+            "want to process, or pass --row N."
+        )
+    return claim.episode.row_index, ledger.row(claim.episode.row_index)
 
 
 def parse_inline_shots(story_brief: str) -> list[str] | None:
@@ -110,8 +102,11 @@ def main():
                     help="Use single ref image for all shots (skip per-shot GPT Image 2 Edit). Cheaper but may show character drift.")
     args = ap.parse_args()
 
-    sheet = load_main_sheet()
-    row_idx, row = pick_row(sheet, args.row)
+    # Always the main sheet, whichever preset is active — this script is for
+    # ad-hoc work and must not touch preset-7's episode timeline.
+    session = SheetSession()
+    ledger = get_episode_ledger(session, sheet_env="GOOGLE_SHEET_ID")
+    row_idx, row = pick_row(ledger, args.row)
 
     title = str(row.get("title", "")).strip() or "(untitled)"
     story_brief = str(row.get("story_brief", "")).strip()
@@ -187,13 +182,12 @@ def main():
                 f"9:16 vertical reference for {genre} short film, cinematic, no text",
             )
         ref_image_url = AtlasImageGenerator().generate(char_prompt)
-        # Write back to sheet so reruns reuse it
+        # Write back immediately so a rerun reuses it rather than paying again.
         try:
-            headers = sheet.row_values(1)
-            if "ref_image_url" in headers:
-                sheet.update_cell(row_idx, headers.index("ref_image_url") + 1, ref_image_url)
-        except Exception:
-            pass
+            ledger.record(row_idx, ref_image_url=ref_image_url)
+            session.flush()
+        except Exception as exc:
+            print(f"      (could not save ref image to sheet: {exc})")
         print(f"      → {ref_image_url[:80]}...")
     else:
         print("\n[2/4] Using existing ref_image_url from sheet")
@@ -264,11 +258,9 @@ def main():
 
     # Update sheet
     try:
-        headers = sheet.row_values(1)
-        if "status" in headers:
-            sheet.update_cell(row_idx, headers.index("status") + 1, "manual_done")
-    except Exception:
-        pass
+        ledger.record(row_idx, status="manual_done")
+    except Exception as exc:
+        print(f"  (could not update sheet status: {exc})")
 
     print(f"\n=== DONE ===")
     print(f"  Saved to: {dest}")

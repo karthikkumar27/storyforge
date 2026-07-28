@@ -164,6 +164,62 @@ def test_context_block_is_empty_without_a_configured_sheet(monkeypatch):
     assert format_characters_context(1, 1) == ""
 
 
+def test_record_ref_image_writes_the_column_for_that_form(configured):
+    session, raw = _session([ALAN, MIRA])
+    reader = CharactersReader(session)
+
+    reader.record_ref_image("Mira Okafor", "normal", "https://img/mira.png")
+
+    _, records = raw.read_all()
+    assert records[1]["ref_image_normal"] == "https://img/mira.png"
+    assert records[0]["ref_image_normal"] == "https://img/alan.png"   # untouched
+
+
+def test_record_ref_image_lands_immediately(configured):
+    """Each image costs money and ~90s; a crash mid-run must not discard the
+    ones already paid for."""
+    session, raw = _session([ALAN])
+
+    CharactersReader(session).record_ref_image("Alan Vorne", "transformed", "https://new")
+
+    assert raw.write_batches == 1        # flushed, not buffered
+    assert raw.cells_written == 1
+
+
+def test_record_ref_image_reads_back_through_the_reader(configured):
+    session, _ = _session([dict(ALAN, ref_image_transformed="")])
+    reader = CharactersReader(session)
+
+    reader.record_ref_image("Alan Vorne", "transformed", "https://img/zenith2.png")
+
+    assert reader.get_main_ref_image_for_form("transformed") == "https://img/zenith2.png"
+
+
+def test_record_ref_image_rejects_an_unknown_character(configured):
+    session, _ = _session([ALAN])
+
+    with pytest.raises(ValueError, match="No character named"):
+        CharactersReader(session).record_ref_image("Nobody", "normal", "https://x")
+
+
+def test_record_ref_image_rejects_a_roster_without_the_column(configured):
+    raw = CountingSheet(
+        [{"character_name": "Alan Vorne", "appearance_normal": "x"}],
+        headers=["character_name", "appearance_normal"],
+    )
+    session = SheetSession(opener=lambda env_var, numericise: raw)
+
+    with pytest.raises(ValueError, match="not found in sheet headers"):
+        CharactersReader(session).record_ref_image("Alan Vorne", "normal", "https://x")
+
+
+def test_record_ref_image_is_a_no_op_target_without_a_configured_sheet(monkeypatch):
+    monkeypatch.delenv(ENV_VAR, raising=False)
+
+    with pytest.raises(ValueError, match="not configured"):
+        CharactersReader().record_ref_image("Alan Vorne", "normal", "https://x")
+
+
 def test_one_session_reads_the_characters_sheet_once(configured):
     """A preset-7 episode builds three readers -- brief generator, script
     generator, orchestrator. Sharing the Run's session collapses three

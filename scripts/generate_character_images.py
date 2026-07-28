@@ -20,7 +20,6 @@ Usage:
     python scripts/generate_character_images.py --dry-run             # plan only, no API calls
 """
 import argparse
-import json
 import os
 import re
 import sys
@@ -33,10 +32,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from dotenv import load_dotenv
 load_dotenv()
 
-import gspread
 import httpx
 
 from config import ATLAS_BASE_URL, ATLAS_IMAGE_MODEL, ATLAS_POLL_INTERVAL_SEC, ATLAS_MAX_POLL_ATTEMPTS
+from modules.characters_reader import CharactersReader
 
 
 COST_PER_IMAGE = 0.006  # GPT Image 2 list price
@@ -96,16 +95,6 @@ def call_atlas_image(prompt: str) -> str:
         time.sleep(2)
 
     raise _AtlasError(f"polling timed out after {ATLAS_MAX_POLL_ATTEMPTS * 2}s")
-
-
-def load_characters_sheet():
-    """Returns (sheet, headers, records) for the characters sheet."""
-    creds_dict = json.loads(os.environ["GOOGLE_SHEETS_CREDENTIALS"])
-    sheet_id = os.environ["ALAN_STORY_CHARACTERS_GOOGLE_SHEET_ID"]
-    sheet = gspread.service_account_from_dict(creds_dict).open_by_key(sheet_id).sheet1
-    headers = sheet.row_values(1)
-    records = sheet.get_all_records(numericise_ignore=["all"])
-    return sheet, headers, records
 
 
 _GENDER_SOFTEN = [
@@ -262,16 +251,18 @@ def find_missing(
     form_filter: str | None,
     force: bool,
     skip: list[str] | None = None,
-) -> list[tuple[dict, str, int]]:
-    """Return list of (record, form, row_index) tuples that need an image generated.
+) -> list[tuple[dict, str]]:
+    """Return list of (record, form) pairs that need an image generated.
 
     form: "normal" or "transformed"
-    row_index: 1-based sheet row number (so we can write back via update_cell)
     skip: list of character names to exclude (case-insensitive)
+
+    Row positions aren't needed here — CharactersReader.record_ref_image()
+    resolves the row and the form's column when writing back.
     """
     skip_lower = {s.strip().lower() for s in (skip or [])}
     todo = []
-    for i, rec in enumerate(records, start=2):  # row 1 is header
+    for rec in records:
         name = str(rec.get("character_name", "")).strip()
         if not name:
             continue
@@ -291,7 +282,7 @@ def find_missing(
                 continue  # nothing to generate from
             if ref_url and not force:
                 continue  # already have one
-            todo.append((rec, form, i))
+            todo.append((rec, form))
     return todo
 
 
@@ -314,7 +305,12 @@ def main():
                     help="Skip a specific character (repeatable). Useful when one keeps failing safety filters: --skip 'Edith Hale' --skip 'Marco Reyes'")
     args = ap.parse_args()
 
-    sheet, headers, records = load_characters_sheet()
+    roster = CharactersReader()
+    if not roster.available:
+        raise SystemExit(
+            "ALAN_STORY_CHARACTERS_GOOGLE_SHEET_ID is not set — nothing to read."
+        )
+    records = roster.get_all_characters()
     todo = find_missing(records, args.character, args.form, args.force, skip=args.skip)
 
     if not todo:
@@ -323,7 +319,7 @@ def main():
 
     # Pretty list of what we're about to do
     print(f"\nFound {len(todo)} image(s) to generate:")
-    for rec, form, _ in todo:
+    for rec, form in todo:
         name = rec.get("character_name", "")
         existing = "(replacing existing)" if str(rec.get(f"ref_image_{form}", "")).strip() else ""
         print(f"  • {name} — {form} {existing}")
@@ -345,21 +341,12 @@ def main():
 
     success = 0
     failures = []
-    ref_col_map = {
-        "normal": headers.index("ref_image_normal") + 1 if "ref_image_normal" in headers else None,
-        "transformed": headers.index("ref_image_transformed") + 1 if "ref_image_transformed" in headers else None,
-    }
 
     SCRIPT_MAX_RETRIES = 3
 
-    for rec, form, row_idx in todo:
+    for rec, form in todo:
         name = rec.get("character_name", "")
         appearance = rec.get(f"appearance_{form}", "")
-        col = ref_col_map[form]
-        if col is None:
-            print(f"  ⚠️  '{name}' [{form}] — no ref_image_{form} column in sheet, skipping")
-            failures.append((name, form, "missing column"))
-            continue
 
         url = None
         last_err = None
@@ -381,8 +368,14 @@ def main():
             failures.append((name, form, last_err or "unknown"))
             continue
 
-        # Write back to sheet
-        sheet.update_cell(row_idx, col, url)
+        # Write back to sheet immediately — this image is already paid for.
+        try:
+            roster.record_ref_image(name, form, url)
+        except ValueError as exc:
+            print(f"  ⚠️  '{name}' [{form}] generated but not saved: {exc}")
+            print(f"      URL (paste manually): {url}")
+            failures.append((name, form, str(exc)))
+            continue
         print(f"  ✅ {name} [{form}] → {url[:80]}...")
         success += 1
 

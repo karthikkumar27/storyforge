@@ -1,7 +1,7 @@
 # tests/modules/test_episode_ledger.py
 import pytest
 
-from modules.episode_ledger import EpisodeLedger, LedgerSpec
+from modules.episode_ledger import EpisodeLedger, LedgerSpec, get_episode_ledger
 from modules.sheet_access import SheetTab
 from tests.support import CountingSheet
 
@@ -361,6 +361,68 @@ def test_series_parts_excludes_incomplete_episodes():
     ])
 
     assert [p["story_brief"] for p in ledger.series_parts("s1")] == ["a"]
+
+
+# -- sheet routing ------------------------------------------------------------
+
+@pytest.fixture
+def recording_session(monkeypatch):
+    """A session that records which sheet env var each tab was opened for.
+
+    get_episode_ledger() reads config attributes at call time, so setattr on the
+    module is enough — no importlib.reload, which would outlive monkeypatch's
+    env restore and leave config stuck on the wrong preset for the rest of the
+    suite.
+    """
+    import config
+    from modules.sheet_access import InMemorySheet, SheetSession
+
+    monkeypatch.setenv("ALAN_STORY_GOOGLE_SHEET_ID", "zenith-sheet")
+    monkeypatch.setenv("GOOGLE_SHEET_ID", "main-sheet")
+    monkeypatch.setattr(config, "ACTIVE_PRESET", "preset-7")
+
+    opened = []
+
+    def opener(env_var, numericise):
+        opened.append(env_var)
+        return InMemorySheet([])
+
+    return SheetSession(opener=opener), opened
+
+
+def test_factory_routes_preset_7_to_the_alan_story_sheet(recording_session):
+    session, opened = recording_session
+
+    get_episode_ledger(session)
+
+    assert opened == ["ALAN_STORY_GOOGLE_SHEET_ID"]
+
+
+def test_sheet_env_override_pins_a_tool_to_the_main_sheet(recording_session):
+    """scripts/manual_episode.py must never touch preset-7's episode timeline,
+    whichever preset happens to be active."""
+    session, opened = recording_session
+
+    get_episode_ledger(session, sheet_env="GOOGLE_SHEET_ID")
+
+    assert opened == ["GOOGLE_SHEET_ID"]
+
+
+def test_preset_7_falls_back_to_the_main_sheet_when_unconfigured(monkeypatch):
+    import config
+    from modules.sheet_access import InMemorySheet, SheetSession
+
+    monkeypatch.delenv("ALAN_STORY_GOOGLE_SHEET_ID", raising=False)
+    monkeypatch.setenv("GOOGLE_SHEET_ID", "main-sheet")
+    monkeypatch.setattr(config, "ACTIVE_PRESET", "preset-7")
+
+    opened = []
+    session = SheetSession(
+        opener=lambda env_var, numericise: (opened.append(env_var), InMemorySheet([]))[1]
+    )
+    get_episode_ledger(session)
+
+    assert opened == ["GOOGLE_SHEET_ID"]
 
 
 # -- the headline claim -------------------------------------------------------

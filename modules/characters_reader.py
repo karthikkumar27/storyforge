@@ -85,6 +85,26 @@ class CharactersReader:
                 relevant.append(c)
         return relevant
 
+    def record_ref_image(self, character_name: str, form: str, url: str) -> None:
+        """Write a generated Reference Image URL back to a character's row.
+
+        Lands immediately rather than buffering: each image costs money and
+        ~90 seconds to produce, so a crash part-way through a bulk run must not
+        throw away the ones already paid for.
+
+        Raises ValueError if the roster has no column for that form, or if the
+        character isn't in the sheet.
+        """
+        if not self.available:
+            raise ValueError("characters sheet is not configured")
+        column = "ref_image_transformed" if form == "transformed" else "ref_image_normal"
+        for i, row in enumerate(self._tab.records, start=2):
+            if str(row.get("character_name", "")).strip() == character_name.strip():
+                self._tab.stage(i, {column: url})
+                self._tab.flush()
+                return
+        raise ValueError(f"No character named {character_name!r} in the roster")
+
     def get_main_character(self) -> dict | None:
         """Return the row marked role='main' (typically Alan/Zenith)."""
         for c in self.get_all_characters():
