@@ -69,6 +69,42 @@ def test_card_durations_come_from_the_card_config():
     assert preset.end_card_duration == 5.0
 
 
+# -- ending style -------------------------------------------------------------
+
+def test_presets_close_their_stories_by_default():
+    preset = from_raw("p", MINIMAL)
+
+    assert preset.ending_style == "complete"
+    assert "MUST feel COMPLETE" in preset.narrative_closure_rule
+    assert "No unfinished sentences" in preset.narrative_closure_rule
+
+
+def test_an_open_ending_preset_forbids_resolving_the_confrontation():
+    preset = from_raw("p", dict(MINIMAL, ending_style="open"))
+
+    rule = preset.narrative_closure_rule
+    assert "MUST NOT RESOLVE" in rule
+    assert "Do NOT show who wins" in rule
+    assert "to be continued" in rule          # explicitly banned as text
+    assert "MUST feel COMPLETE within this video" not in rule
+
+
+def test_an_unknown_ending_style_falls_back_to_closing_the_story():
+    """A typo in config must not silently produce open-ended episodes."""
+    preset = from_raw("p", dict(MINIMAL, ending_style="opne"))
+
+    assert "MUST feel COMPLETE" in preset.narrative_closure_rule
+
+
+def test_only_the_action_preset_leaves_its_ending_open():
+    open_ended = [
+        key for key, raw in PRESETS.items()
+        if from_raw(key, raw).ending_style == "open"
+    ]
+
+    assert open_ended == ["preset-9"]
+
+
 # -- published title ----------------------------------------------------------
 
 def test_no_template_means_no_numbered_title():
@@ -126,7 +162,7 @@ def test_kids_presets_load_the_kids_skill_and_declare_their_audience(key):
     assert preset.made_for_kids is True
 
 
-@pytest.mark.parametrize("key", ["preset-1", "preset-2", "preset-3", "preset-8"])
+@pytest.mark.parametrize("key", ["preset-1", "preset-2", "preset-3", "preset-8", "preset-9"])
 def test_other_presets_claim_no_serialized_canon(key):
     preset = from_raw(key, PRESETS[key])
 
@@ -142,6 +178,22 @@ def test_only_zenith_uses_a_dedicated_episode_sheet():
     ]
 
     assert with_sheet == ["preset-7"]
+
+
+def test_the_shonen_action_preset_is_configured_for_unique_standalone_fights():
+    shonen = from_raw("preset-9", PRESETS["preset-9"])
+
+    # Unique stories every time -> standalone, never a continuing series
+    assert shonen.story_mode == "standalone"
+    assert shonen.series_parts == 1
+    # The fight is cut at its peak
+    assert shonen.ending_style == "open"
+    # Character stays consistent across the shots of one fight
+    assert shonen.per_shot_storyboards is True
+    # No preset-specific skill: the common craft stack + the YouTube optimiser
+    # already cover it
+    assert shonen.extra_skills == ()
+    assert len(shonen.genres) == 6
 
 
 def test_active_preset_follows_the_environment(monkeypatch):

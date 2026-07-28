@@ -129,3 +129,13 @@ def test_the_script_asks_for_enough_tokens_for_a_full_shot_list():
     ScriptGenerator(llm=llm).generate("brief", "sci-fi")
 
     assert llm.calls[0]["max_tokens"] == 2000
+
+
+def test_the_closure_rule_reaches_the_system_prompt():
+    """Whether the story resolves is a preset capability, not a constant baked
+    into the prompt — preset-9 cuts the fight at its peak."""
+    llm = StubLlm([_sample()])
+
+    ScriptGenerator(llm=llm).generate("brief", "sci-fi")
+
+    assert _preset.narrative_closure_rule in llm.calls[0]["system"]

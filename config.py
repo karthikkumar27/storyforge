@@ -326,6 +326,88 @@ PRESETS = {
             "narration_start_offset": 3.0,
         },
     },
+    "preset-9": {
+        "name": "Modern Shōnen Action",
+        # Scenario archetypes rather than settings — the brief generator picks
+        # one at random per video, which is what keeps every story different.
+        "genres": [
+            "rival-showdown", "power-awakening", "outnumbered-stand",
+            "master-duel", "rooftop-chase", "sealed-enemy",
+        ],
+        "brief_system": (
+            "You are a story writer for cinematic modern shōnen anime action Shorts.\n\n"
+            "Write a 2-3 sentence story idea for ONE self-contained fight.\n\n"
+            "============================================================\n"
+            "THE FORMAT\n"
+            "============================================================\n"
+            "Present-day setting — a real modern city, school, train platform, car park,\n"
+            "shrine at night, flooded underpass, rooftop above traffic. Ordinary places\n"
+            "where something extraordinary breaks out. NOT medieval, NOT space, NOT\n"
+            "post-apocalyptic.\n\n"
+            "One protagonist. One opponent (or one against several). A power system that\n"
+            "is SPECIFIC and VISUAL — something you can see land: gravity that bends\n"
+            "around a fist, sound frozen into blades, a shadow that moves a half-second\n"
+            "early, borrowed heat, stitched wounds that reopen on the attacker.\n\n"
+            "============================================================\n"
+            "EVERY STORY MUST BE COMPLETELY NEW\n"
+            "============================================================\n"
+            "Different protagonist, different power, different opponent, different city\n"
+            "location, different reason they are fighting. Never reuse a power concept.\n"
+            "Never reuse a setting. If a previous story used fire, do not use heat. If a\n"
+            "previous story was on a rooftop, go underground.\n\n"
+            "The SCENARIO ARCHETYPE assigned in your user prompt tells you the SHAPE of\n"
+            "the confrontation — fill it with something nobody has seen:\n"
+            "  rival-showdown    — someone who knows the protagonist too well\n"
+            "  power-awakening   — the power arrives mid-fight, uninvited, unwelcome\n"
+            "  outnumbered-stand — one against many, in a space with no exit\n"
+            "  master-duel       — against someone stronger who is holding back\n"
+            "  rooftop-chase     — a running battle across a moving city\n"
+            "  sealed-enemy      — something that should have stayed shut, opening\n\n"
+            "============================================================\n"
+            "THE ENDING — THIS IS THE RULE THAT MATTERS MOST\n"
+            "============================================================\n"
+            "THE FIGHT DOES NOT FINISH. Cut at the peak.\n"
+            "- Do NOT say who wins.\n"
+            "- Do NOT land the final blow.\n"
+            "- Do NOT show anyone walking away.\n"
+            "- End ON the turn: the moment the opponent smiles, the moment the power\n"
+            "  answers, the moment the ground gives, the strike an instant before impact.\n"
+            "The last beat should make a viewer need the next second — and there is no\n"
+            "next second. That tension is the whole product.\n\n"
+            "TONE: kinetic, grounded, high-stakes. Weight and consequence, not spectacle\n"
+            "for its own sake. Think a single unbroken action sequence from a modern\n"
+            "action anime, at its loudest moment.\n\n"
+            "IMPORTANT: never use copyrighted character names, techniques, organisations\n"
+            "or franchise references. Everything original."
+        ),
+        "voice_map": {
+            "rival-showdown":    "pNInz6obpgDQGcFmaJgB",  # Adam — intense, weighty
+            "power-awakening":   "pNInz6obpgDQGcFmaJgB",
+            "outnumbered-stand": "pNInz6obpgDQGcFmaJgB",
+            "master-duel":       "pNInz6obpgDQGcFmaJgB",
+            "rooftop-chase":     "pNInz6obpgDQGcFmaJgB",
+            "sealed-enemy":      "pNInz6obpgDQGcFmaJgB",
+        },
+        "music_tags": ["anime", "battle", "epic", "intense", "percussive", "orchestral"],
+        "video_style": "modern shōnen anime, cinematic cel-shaded, dynamic action lighting, high contrast",
+        # Standalone: every video is a brand-new fight with a brand-new cast.
+        "story_mode": "standalone",
+        "series_parts": 1,
+        "youtube_category": "1",      # Film & Animation
+        "per_shot_storyboards": True,
+        # The capability this preset exists to exercise — the confrontation is
+        # cut at its peak instead of resolving. See Preset.narrative_closure_rule.
+        "ending_style": "open",
+        "youtube_hashtags": ["anime", "shonen", "animefight", "action", "shorts"],
+        "audio_mix": {
+            "mode": "narration_over_native",
+            "narration_volume": 1.0,
+            # Action scenes carry a lot of native impact sound — keep the bed a
+            # little lower than preset-7 so the narration stays intelligible.
+            "ambient_volume": 0.26,
+            "narration_start_offset": 0.0,
+        },
+    },
     "preset-8": {
         "name": "Cinematic Drone",
         # Each genre is a SCENARIO TYPE the brief generator picks randomly

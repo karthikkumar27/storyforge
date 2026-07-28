@@ -36,7 +36,7 @@ Your output MUST be valid JSON with exactly this structure:
 {{
   "visual_style": "SHORT art direction prefix (max 25 words). ONLY include: art style ({video_style}), color palette, and lighting mood. Do NOT describe the character here — the reference image handles that.",
   "character_image_prompt": "A detailed prompt for generating a SINGLE reference image of the main character in {video_style} style. This image will be used as the first frame of every video shot. Describe the character with SPECIFIC physical details (species, clothing, build, features, accessories). Show a specific pose in the story's environment. 9:16 vertical composition.",
-  "narrative": "Full voiceover narration. MUST be timed to fit the video — write EXACTLY {word_count_min}-{word_count_max} words (about {total_duration} seconds of speaking). Match the tone to {preset_name}. Every second counts. No filler. The story MUST feel COMPLETE within this video — beginning, middle, and end. No unfinished sentences, no trailing cliffhangers, no 'to be continued' feel. The viewer should feel satisfied at the end.",
+  "narrative": "Full voiceover narration. MUST be timed to fit the video — write EXACTLY {word_count_min}-{word_count_max} words (about {total_duration} seconds of speaking). Match the tone to {preset_name}. Every second counts. No filler. {closure_rule}",
   "title": "Short plain title (3-5 words, max 50 chars)",
   "description": "YouTube description (100-150 words)",
   "tags": ["10-15 YouTube SEO tags: mix broad terms (anime, sci-fi, shorts) + specific terms (character name, story topic) + trending terms (AI generated, anime shorts 2026). No duplicates."],
@@ -106,6 +106,7 @@ class ScriptGenerator:
             total_duration=total_duration,
             video_style=VIDEO_STYLE,
             shot_duration=SHOT_DURATION,
+            closure_rule=_preset.narrative_closure_rule,
         )
 
         # Preset-7: pull the locked appearance paragraphs of every character active

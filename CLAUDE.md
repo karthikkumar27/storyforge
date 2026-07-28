@@ -121,6 +121,8 @@ idea-creator/
 | `preset-5` | Kids — Mini Mart Cat | mini-mart-adventure, customer-chaos, shelf-stacking, delivery-day | series (999) | Callum | Cat shopkeeper |
 | `preset-6` | Kids — Croc Academy | science-lesson, math-fun, nature-explore, history-adventure | series (999) | Liam | 3D animated |
 | `preset-7` | **Zenith Chronicles** | origin-story, transformation, galaxy-quest, earth-encounter | series (999, but really 200) | Adam | **Special — see below** |
+| `preset-8` | Cinematic Drone | urban-chase, wildlife-encounter, impossible-vista, human-reaction, landscape-sweep, coastal-flight | standalone | — | `single_shot_native` — one Seedance call, no script/storyboards/stitch |
+| `preset-9` | Modern Shōnen Action | rival-showdown, power-awakening, outnumbered-stand, master-duel, rooftop-chase, sealed-enemy | standalone | Adam | `ending_style: open` — the fight is cut at its peak |
 
 Set `CONTENT_PRESET=preset-N` in `.env`. The active preset drives genre, voice, video style, story mode, sheet routing, skill loading, and YouTube category.
 

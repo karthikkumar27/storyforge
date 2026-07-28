@@ -43,6 +43,11 @@ class Preset:
     tracks_episode_numbers: bool = False
     youtube_title_template: str | None = None
     episode_sheet_env: str | None = None
+    # "complete" — the story resolves inside the episode (the default, and what
+    # every preset did before this existed).
+    # "open"     — setup and stakes are complete, but the confrontation is left
+    #              unresolved on purpose.
+    ending_style: str = "complete"
 
     # -- optional feature configuration --------------------------------------
     per_shot_storyboards: bool = False
@@ -63,6 +68,31 @@ class Preset:
         """True when one model call produces the whole video, so there is no
         script, no per-shot storyboards, no stitching and no audio mixing."""
         return self.pipeline_mode == "single_shot_native"
+
+    @property
+    def narrative_closure_rule(self) -> str:
+        """The closure instruction handed to the script generator.
+
+        Lives here rather than hardcoded in the prompt because presets disagree:
+        most want a story that lands, an action preset wants the fight cut at its
+        peak. The wording is deliberately forceful — this sits inside the JSON
+        schema description, which the model weights heavily, so a soft hint
+        loses to the surrounding template.
+        """
+        if self.ending_style == "open":
+            return (
+                "The SETUP and STAKES must feel complete, but the CONFRONTATION "
+                "MUST NOT RESOLVE. End at the peak — mid-strike, mid-reveal, on "
+                "the turn. Do NOT show who wins. Do NOT resolve the fight. Do NOT "
+                "write an epilogue. The final line must leave the outcome hanging "
+                "while still feeling deliberate rather than truncated. Never write "
+                "'to be continued' — the final image and final line do that work."
+            )
+        return (
+            "The story MUST feel COMPLETE within this video — beginning, middle, "
+            "and end. No unfinished sentences, no trailing cliffhangers, no "
+            "'to be continued' feel. The viewer should feel satisfied at the end."
+        )
 
     @property
     def title_card_duration(self) -> float:
@@ -104,6 +134,7 @@ def from_raw(key: str, raw: dict) -> Preset:
         tracks_episode_numbers=bool(raw.get("tracks_episode_numbers", False)),
         youtube_title_template=raw.get("youtube_title_template"),
         episode_sheet_env=raw.get("episode_sheet_env"),
+        ending_style=raw.get("ending_style", "complete"),
         per_shot_storyboards=bool(raw.get("per_shot_storyboards", False)),
         made_for_kids=bool(raw.get("made_for_kids", False)),
         youtube_hashtags=tuple(raw.get("youtube_hashtags") or ()),
