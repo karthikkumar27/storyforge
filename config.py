@@ -399,13 +399,11 @@ PRESETS = {
         # cut at its peak instead of resolving. See Preset.narrative_closure_rule.
         "ending_style": "open",
         "youtube_hashtags": ["anime", "shonen", "animefight", "action", "shorts"],
+        # No voiceover. Seedance's native audio — impacts, footfalls, breath,
+        # the room — IS the soundtrack, and it plays at full strength because
+        # the stitched file is never re-encoded for audio at all.
         "audio_mix": {
-            "mode": "narration_over_native",
-            "narration_volume": 1.0,
-            # Action scenes carry a lot of native impact sound — keep the bed a
-            # little lower than preset-7 so the narration stays intelligible.
-            "ambient_volume": 0.26,
-            "narration_start_offset": 0.0,
+            "mode": "native_only",
         },
     },
     "preset-8": {

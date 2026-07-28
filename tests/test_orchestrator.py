@@ -1,4 +1,6 @@
 # tests/test_orchestrator.py
+from dataclasses import replace
+
 import pytest
 
 from config import GENRES, STORY_MODE, SERIES_PARTS
@@ -296,3 +298,49 @@ def test_a_full_run_reads_the_sheet_once():
 
     assert raw.reads == 1
     assert raw.write_batches == 3   # generating, uploading (+buffered), done
+
+
+# -- audio routing ------------------------------------------------------------
+
+@requires_shot_pipeline
+def test_a_native_only_preset_never_calls_the_audio_mixer(monkeypatch):
+    """preset-9 has no narration — the model's own audio is the soundtrack, and
+    the stitched file must reach YouTube without an audio re-encode."""
+    import orchestrator
+    # Preset is frozen, so swap the whole value rather than a field.
+    monkeypatch.setattr(
+        orchestrator, "_preset",
+        replace(orchestrator._preset, audio_mix={"mode": "native_only"}),
+    )
+
+    class ExplodingMixer:
+        def __call__(self):
+            raise AssertionError("the audio mixer must not run for native_only")
+
+    uploader = FakeUploader()
+    deps, _ = _deps(
+        [_row(story_brief="b", status="pending")],
+        uploader=uploader,
+        audio_mixer=ExplodingMixer(),
+    )
+
+    result = run_pipeline(deps)
+
+    assert result["status"] == "done"
+    # the file handed to YouTube is the stitched video, untouched
+    assert uploader.uploads[0][0] == "/tmp/stitched.mp4"
+
+
+@requires_shot_pipeline
+def test_a_narration_preset_still_mixes(monkeypatch):
+    import orchestrator
+    monkeypatch.setattr(
+        orchestrator, "_preset",
+        replace(orchestrator._preset, audio_mix={"mode": "narration_over_native"}),
+    )
+    uploader = FakeUploader()
+    deps, _ = _deps([_row(story_brief="b", status="pending")], uploader=uploader)
+
+    run_pipeline(deps)
+
+    assert uploader.uploads[0][0] == "/tmp/final.mp4"

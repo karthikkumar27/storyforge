@@ -302,7 +302,15 @@ def run_pipeline(deps: Deps | None = None) -> dict:
         # 2. VIDEO_PROVIDER=atlas without that config → use Seedance native only.
         # 3. Other providers → full ElevenLabs voiceover + BGM (legacy v1 path).
         audio_mix_cfg = _preset.audio_mix or {}
-        if audio_mix_cfg.get("mode") == "narration_over_native":
+        audio_mode = audio_mix_cfg.get("mode")
+
+        if audio_mode == "native_only":
+            # No voiceover at all — the model's own audio is the soundtrack.
+            # The file is passed through untouched rather than re-encoded at
+            # volume 1.0, so nothing is lost to a needless transcode.
+            final_path = video_path
+            print("[Pipeline] Native audio only — no narration, no re-encode", flush=True)
+        elif audio_mode == "narration_over_native":
             # Auto-derive title/end card durations so narration stays inside
             # the story segment (doesn't overlap brand container audio stings)
             title_duration = _preset.title_card_duration
