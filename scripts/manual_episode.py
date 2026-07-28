@@ -47,6 +47,7 @@ from modules.episode_ledger import get_episode_ledger
 from modules.sheet_access import SheetSession
 from modules.image_generator import AtlasImageGenerator
 from modules.script_generator import ScriptGenerator
+from modules.storyboard import build_storyboards
 from modules.video_producer import AtlasVideoProducer
 
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -195,44 +196,8 @@ def main():
     # ===== 3. Per-shot storyboards (optional) =====
     storyboard_urls = None
     if not args.no_storyboards:
-        print(f"\n[3/4] Generating {len(shots)} per-shot storyboards...")
-        storyboard_urls = []
-        edit_gen = AtlasImageGenerator()
-        for i, shot_prompt in enumerate(shots):
-            # POV / wide-exterior / environmental shots intentionally don't show
-            # the main character — keep this in sync with orchestrator.py.
-            low = shot_prompt.lower()
-            character_absent = any(m in low for m in (
-                "pov shot", "pov push", "pov dolly",
-                "extreme wide", "ews ", "ews,", "ews.",
-                "from outside the ship", "outside the ship",
-                "no character", "character is not visible", "character not visible",
-                "camera pushes through", "camera dollies forward into",
-                "the world widening", "the ship growing smaller",
-            ))
-            if character_absent:
-                edit_prompt = (
-                    f"Use the reference image as a STYLE anchor only — preserve the illustration "
-                    f"style, color palette, and world established in the reference. The main character "
-                    f"should NOT be in frame (this is a POV, wide-exterior, or environmental shot). "
-                    f"Render the scene exactly as described, 9:16 vertical, at the START of the "
-                    f"action, no motion blur. Scene: {shot_prompt}"
-                )
-            else:
-                edit_prompt = (
-                    f"Use the reference image as the base — preserve the main character's identity, "
-                    f"outfit, and illustration style exactly. Render this scene as a 9:16 vertical "
-                    f"still frame at the START of the action, no motion blur. If the shot prompt "
-                    f"names other characters or entities (a holographic AI, another person, a creature), "
-                    f"include them rendered as the prompt describes. Scene: {shot_prompt}"
-                )
-            try:
-                sb = edit_gen.edit_image(ref_image_url, edit_prompt)
-                storyboard_urls.append(sb)
-                print(f"      shot {i+1}/{len(shots)} ✓")
-            except Exception as exc:
-                print(f"      shot {i+1}/{len(shots)} FAILED ({exc}) — falling back to single ref")
-                storyboard_urls.append(None)
+        print("\n[3/4] Generating per-shot storyboards...")
+        storyboard_urls = build_storyboards(shots, ref_image_url, style=VIDEO_STYLE)
     else:
         print("\n[3/4] Skipping per-shot storyboards (--no-storyboards)")
 

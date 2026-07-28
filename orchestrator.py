@@ -16,6 +16,7 @@ from modules.video_producer import (
     AtlasSeedance1_5T2VFastProducer,
 )
 from modules.audio_mixer import AudioMixer
+from modules.storyboard import build_storyboards
 from modules.youtube_uploader import YouTubeUploader
 
 
@@ -248,59 +249,9 @@ def run_pipeline() -> dict:
         # and character drift across shots.
         storyboard_urls: list[str | None] | None = None
         if _preset.get("per_shot_storyboards") and ref_image_url:
-            storyboard_urls = []
-            shots = script_result["shots"]
-            print(f"[Pipeline] Generating {len(shots)} per-shot storyboards (Premium)...", flush=True)
-            from modules.image_generator import AtlasImageGenerator
-            edit_gen = AtlasImageGenerator()
-            for i, shot_prompt in enumerate(shots):
-                # Build the storyboard edit prompt. Two modes:
-                #
-                # 1. Character-present (default): preserve the main character's
-                #    face/outfit from the reference image, allow supporting
-                #    characters from the shot text into the frame.
-                # 2. Character-absent (POV / extreme-wide / exterior shots): use
-                #    the reference image only as a STYLE anchor (cel-shaded look,
-                #    color palette, world). The main character must not be in
-                #    frame because the shot text says so explicitly.
-                #
-                # We detect mode 2 via markers the script generator already writes
-                # for POV / wide shots (these come from video-prompt-builder skill).
-                low = shot_prompt.lower()
-                character_absent = any(m in low for m in (
-                    "pov shot", "pov push", "pov dolly",
-                    "extreme wide", "ews ", "ews,", "ews.",
-                    "from outside the ship", "outside the ship",
-                    "no character", "character is not visible", "character not visible",
-                    "camera pushes through", "camera dollies forward into",
-                    "the world widening", "the ship growing smaller",
-                ))
-
-                if character_absent:
-                    edit_prompt = (
-                        f"Use the reference image as a STYLE anchor only — preserve the {VIDEO_STYLE} "
-                        f"illustration style, color palette, and the world established in the reference. "
-                        f"The main character should NOT be in frame for this shot (it is a POV, "
-                        f"wide-exterior, or environmental shot). Render the scene exactly as the shot "
-                        f"prompt describes, as a 9:16 vertical still frame at the START of the action, "
-                        f"no motion blur. Scene: {shot_prompt}"
-                    )
-                else:
-                    edit_prompt = (
-                        f"Use the reference image as the base — preserve the main character's face, "
-                        f"hair, outfit, and {VIDEO_STYLE} style exactly. Render this scene as a 9:16 "
-                        f"vertical still frame at the START of the action, no motion blur. If the shot "
-                        f"prompt explicitly names other characters or entities (a holographic AI "
-                        f"manifesting as light, another person, a creature), include them rendered "
-                        f"exactly as the shot prompt describes. Scene: {shot_prompt}"
-                    )
-                try:
-                    sb_url = edit_gen.edit_image(ref_image_url, edit_prompt)
-                    storyboard_urls.append(sb_url)
-                    print(f"[Pipeline]   shot {i+1} storyboard ✓", flush=True)
-                except Exception as exc:
-                    print(f"[Pipeline]   shot {i+1} storyboard FAILED ({exc}), falling back to locked ref", flush=True)
-                    storyboard_urls.append(None)  # falls back to ref_image_url in producer
+            storyboard_urls = build_storyboards(
+                script_result["shots"], ref_image_url, style=VIDEO_STYLE,
+            )
 
         video_path = create_video_producer().produce(
             script_result["shots"],
