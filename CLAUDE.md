@@ -55,7 +55,7 @@ Set `VIDEO_PROVIDER=atlas` and `IMAGE_PROVIDER=atlas` in `.env`. To revert to v1
 ```
 idea-creator/
 ├── main.py                   ← Flask entry point (load_dotenv MUST be first)
-├── orchestrator.py           ← Pipeline runner — one episode end-to-end
+├── orchestrator.py           ← Pipeline runner — one episode end-to-end (takes a Deps bundle)
 ├── config.py                 ← All presets, providers, model IDs, atlas/byteplus URLs
 ├── generate_script.py        ← CLI: brief + script preview without video
 ├── generate_youtube_token.py ← One-time OAuth helper

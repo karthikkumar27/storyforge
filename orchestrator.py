@@ -1,15 +1,18 @@
 import re
 import shutil
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import Any, Callable
 
 from config import STORY_MODE, VIDEO_PROVIDER, GENRES, VIDEO_STYLE, DEFAULT_TAGS
 from modules.preset import active_preset
+from modules.characters_reader import CharactersReader
 from modules.episode_ledger import get_episode_ledger
 from modules.sheet_access import SheetSession
 from modules.brief_generator import BriefGenerator
 from modules.script_generator import ScriptGenerator
-from modules.image_generator import create_image_generator
+from modules.image_generator import AtlasImageGenerator, create_image_generator
 from modules.video_producer import (
     create_video_producer,
     AtlasSeedance2I2VLoopProducer,
@@ -25,6 +28,37 @@ PROJECT_ROOT = Path(__file__).parent
 VIDEOS_DIR = PROJECT_ROOT / "videos"
 
 _preset = active_preset()
+
+
+@dataclass
+class Deps:
+    """Everything run_pipeline talks to.
+
+    Fields are *factories*, not instances, so nothing is constructed until the
+    pipeline reaches it. That matters: YouTubeUploader refreshes an OAuth token
+    in its constructor, and an episode should not pay for that before its video
+    exists.
+
+    Production calls `run_pipeline()` and gets these defaults. Tests construct a
+    Deps with the two or three collaborators they care about and leave the rest,
+    which is why no test needs to patch a name inside this module.
+    """
+
+    session: SheetSession = field(default_factory=SheetSession)
+    ledger: Callable[[SheetSession], Any] = get_episode_ledger
+    brief_generator: Callable[[SheetSession], Any] = BriefGenerator
+    script_generator: Callable[[SheetSession], Any] = ScriptGenerator
+    characters: Callable[[SheetSession], Any] = CharactersReader
+    image_generator: Callable[[], Any] = create_image_generator
+    atlas_image_generator: Callable[[], Any] = AtlasImageGenerator
+    storyboards: Callable[..., list] = build_storyboards
+    video_producer: Callable[[], Any] = create_video_producer
+    audio_mixer: Callable[[], Any] = AudioMixer
+    uploader: Callable[[], Any] = YouTubeUploader
+    # Single-shot native presets pick one of these by config.
+    loop_producer: Callable[[], Any] = AtlasSeedance2I2VLoopProducer
+    seedance2_producer: Callable[[], Any] = AtlasSeedance2T2VProducer
+    seedance15_producer: Callable[[], Any] = AtlasSeedance1_5T2VFastProducer
 
 
 
@@ -63,18 +97,18 @@ def _archive_video(source_path: str, title: str) -> str | None:
         return None
 
 
-def _run_single_shot_native() -> dict:
+def _run_single_shot_native(deps: Deps) -> dict:
     """Simplified pipeline for presets where Seedance 2.0 generates the whole
     video (including audio) in one call. Flow: pending row → submit prompt →
     download MP4 → archive → upload. No script gen, no per-shot storyboards,
     no stitching, no audio mixing.
     """
-    session = SheetSession()
-    ledger = get_episode_ledger(session)
+    session = deps.session
+    ledger = deps.ledger(session)
     claim = ledger.claim_next()
 
     if claim.needs_brief:
-        brief_data = BriefGenerator(session).generate(**claim.brief_context.as_kwargs())
+        brief_data = deps.brief_generator(session).generate(**claim.brief_context.as_kwargs())
         claim = ledger.start(brief_data)
 
     if claim.episode is None:
@@ -98,13 +132,12 @@ def _run_single_shot_native() -> dict:
             if ref_image_url:
                 print(f"[Drone] Reusing ref image from sheet: {ref_image_url[:80]}...", flush=True)
             else:
-                from modules.image_generator import AtlasImageGenerator
                 image_model = _preset.image_model
                 print(f"[Drone] Generating loop-anchor still ({image_model or 'default'})...", flush=True)
-                ref_image_url = AtlasImageGenerator().generate(prompt, model=image_model)
+                ref_image_url = deps.atlas_image_generator().generate(prompt, model=image_model)
                 ledger.record(row_index, ref_image_url=ref_image_url)
                 print(f"[Drone] Still generated: {ref_image_url[:80]}...", flush=True)
-            video_path = AtlasSeedance2I2VLoopProducer().produce(
+            video_path = deps.loop_producer().produce(
                 image_url=ref_image_url,
                 motion_prompt=prompt,
                 params=seedance2_cfg,
@@ -118,10 +151,10 @@ def _run_single_shot_native() -> dict:
             variant = seedance2_cfg.get("model_variant", "2.0")
             if variant == "1.5-fast":
                 print(f"[Drone] Using Seedance 1.5 Pro Fast (cheap, silent)", flush=True)
-                video_path = AtlasSeedance1_5T2VFastProducer().produce(prompt, seedance2_cfg)
+                video_path = deps.seedance15_producer().produce(prompt, seedance2_cfg)
             else:
                 print(f"[Drone] Using Seedance 2.0 (native audio, expensive)", flush=True)
-                video_path = AtlasSeedance2T2VProducer().produce(prompt, seedance2_cfg)
+                video_path = deps.seedance2_producer().produce(prompt, seedance2_cfg)
 
         # Title for YouTube — prefer the title field if the brief had a
         # title_hint, otherwise fall back to a generic timestamped title.
@@ -147,7 +180,7 @@ def _run_single_shot_native() -> dict:
             )(list(GENRES) + ["drone", "cinematic", "shorts", "ambient"]),
             "narrative": "",              # unused for this preset
         }
-        youtube_url = YouTubeUploader().upload(archive_path or video_path, script_result)
+        youtube_url = deps.uploader().upload(archive_path or video_path, script_result)
         ledger.finish(row_index, youtube_url)
         return {"status": "done", "youtube_url": youtube_url}
 
@@ -159,20 +192,22 @@ def _run_single_shot_native() -> dict:
         raise
 
 
-def run_pipeline() -> dict:
+def run_pipeline(deps: Deps | None = None) -> dict:
     # Single-shot native presets (preset-8 Drone Shorts) bypass the
     # script/image/storyboard/stitcher/audio-mixer pipeline entirely — they
     # just generate a prompt, send it to Seedance 2.0 (which produces video +
     # audio in one call), and upload. Branched at the top so the rest of this
     # function stays focused on the shot-assembly flow.
+    deps = deps or Deps()
+
     if _preset.is_single_shot_native:
-        return _run_single_shot_native()
+        return _run_single_shot_native(deps)
 
     # One SheetSession per Run — reads are cached for its lifetime and discarded
     # afterwards, so material edited between Runs is picked up.
     # See docs/adr/0001-run-scoped-ledger-cache.md.
-    session = SheetSession()
-    ledger = get_episode_ledger(session)
+    session = deps.session
+    ledger = deps.ledger(session)
 
     # Routes to ALAN_STORY sheet for preset-7, main GOOGLE_SHEET for everything
     # else. Resolves the anti-repetition history, the Series so far, and the next
@@ -180,7 +215,7 @@ def run_pipeline() -> dict:
     claim = ledger.claim_next()
 
     if claim.needs_brief:
-        brief_data = BriefGenerator(session).generate(**claim.brief_context.as_kwargs())
+        brief_data = deps.brief_generator(session).generate(**claim.brief_context.as_kwargs())
         claim = ledger.start(brief_data)
 
     if claim.episode is None:
@@ -192,7 +227,7 @@ def run_pipeline() -> dict:
     try:
         ledger.record(row_index, status="generating")
 
-        script_result = ScriptGenerator(session).generate(
+        script_result = deps.script_generator(session).generate(
             episode.story_brief,
             episode.genre,
             arc_number=episode.arc_number,
@@ -207,8 +242,7 @@ def run_pipeline() -> dict:
         # This takes priority over legacy series-id reuse and preset defaults so
         # each episode uses the right form's locked image.
         if _preset.serialized_canon:
-            from modules.characters_reader import CharactersReader
-            chars = CharactersReader(session)
+            chars = deps.characters(session)
             form = str(episode.character_form).strip().lower() or "normal"
             ref_image_url = chars.get_main_ref_image_for_form(form)
             if ref_image_url:
@@ -237,7 +271,7 @@ def run_pipeline() -> dict:
         if not ref_image_url:
             char_prompt = script_result.get("character_image_prompt")
             if char_prompt:
-                ref_image_url = create_image_generator().generate(char_prompt)
+                ref_image_url = deps.image_generator().generate(char_prompt)
                 print("[Pipeline] New reference image generated", flush=True)
 
         # Save reference image URL to sheet for future parts (buffered)
@@ -252,11 +286,11 @@ def run_pipeline() -> dict:
         # and character drift across shots.
         storyboard_urls: list[str | None] | None = None
         if _preset.per_shot_storyboards and ref_image_url:
-            storyboard_urls = build_storyboards(
+            storyboard_urls = deps.storyboards(
                 script_result["shots"], ref_image_url, style=VIDEO_STYLE,
             )
 
-        video_path = create_video_producer().produce(
+        video_path = deps.video_producer().produce(
             script_result["shots"],
             reference_image_url=ref_image_url,
             storyboard_urls=storyboard_urls,
@@ -273,7 +307,7 @@ def run_pipeline() -> dict:
             # the story segment (doesn't overlap brand container audio stings)
             title_duration = _preset.title_card_duration
             end_duration = _preset.end_card_duration
-            final_path = AudioMixer().mix_with_native_audio(
+            final_path = deps.audio_mixer().mix_with_native_audio(
                 video_path,
                 script_result["narrative"],
                 episode.genre,
@@ -286,7 +320,7 @@ def run_pipeline() -> dict:
             final_path = video_path
             print("[Pipeline] Using Seedance native audio, skipping ElevenLabs", flush=True)
         else:
-            final_path = AudioMixer().mix(video_path, script_result["narrative"], episode.genre)
+            final_path = deps.audio_mixer().mix(video_path, script_result["narrative"], episode.genre)
 
         # Format YouTube title.
         # Preset-7 (Zenith): "The Chronicle of Zenith — Ep {N}: {Episode Title}"
@@ -322,7 +356,7 @@ def run_pipeline() -> dict:
 
         # Flushes the buffered script + ref image along with the status change.
         ledger.record(row_index, status="uploading")
-        youtube_url = YouTubeUploader().upload(final_path, script_result)
+        youtube_url = deps.uploader().upload(final_path, script_result)
 
         ledger.finish(row_index, youtube_url)
         return {"status": "done", "youtube_url": youtube_url}
