@@ -112,9 +112,13 @@ class AtlasImageGenerator:
 class SeedreamImageGenerator:
     """Generates reference images via Seedream on BytePlus ModelArk."""
 
-    def __init__(self):
+    def __init__(self, client=None):
+        self.client = client or self._build_client()
+
+    @staticmethod
+    def _build_client():
         from byteplussdkarkruntime import Ark
-        self.client = Ark(
+        return Ark(
             base_url=SEEDANCE_BASE_URL,
             api_key=os.environ["ARK_API_KEY"],
         )

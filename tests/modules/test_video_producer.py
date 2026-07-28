@@ -105,68 +105,85 @@ def test_seedance_downloads_through_the_client():
     assert path.endswith("drone.mp4")
 
 
-# -- Kling producer (unchanged, still has its own protocol) -------------------
+# -- Kling producer (legacy provider, still has its own protocol) -------------
+#
+# Credentials, HTTP and sleep are all injected, so these need no environment,
+# no network and no clock.
 
-
-@patch("modules.video_producer.httpx")
-def test_submit_shot_returns_task_id(mock_httpx, monkeypatch):
-    monkeypatch.setenv("KLING_ACCESS_KEY_ID", "key123")
-    monkeypatch.setenv("KLING_SECRET_KEY", "secret456")
-
-    mock_resp = MagicMock()
-    mock_resp.status_code = 200  # _submit_shot raises on >= 400
-    mock_resp.json.return_value = {"data": {"task_id": "task_abc"}}
-    mock_httpx.post.return_value = mock_resp
-
+def _kling(http):
     from modules.video_producer import KlingVideoProducer
-    producer = KlingVideoProducer()
-    task_id = producer._submit_shot("Slow orbital pan, deep space black, nebula glow")
-
-    assert task_id == "task_abc"
-    mock_httpx.post.assert_called_once()
-
-
-@patch("modules.video_producer.httpx")
-def test_poll_shot_returns_url_when_succeed(mock_httpx, monkeypatch):
-    monkeypatch.setenv("KLING_ACCESS_KEY_ID", "key123")
-    monkeypatch.setenv("KLING_SECRET_KEY", "secret456")
-
-    mock_resp = MagicMock()
-    mock_resp.json.return_value = {
-        "data": {"task_status": "succeed", "videos": [{"url": "https://cdn.kling.ai/v.mp4"}]}
-    }
-    mock_httpx.get.return_value = mock_resp
-
-    from modules.video_producer import KlingVideoProducer
-    producer = KlingVideoProducer()
-    url = producer._poll_shot("task_abc")
-
-    assert url == "https://cdn.kling.ai/v.mp4"
+    return KlingVideoProducer(
+        access_key_id="key123",
+        secret_key="secret456",
+        http=http,
+        sleep=lambda _s: None,
+    )
 
 
-@patch("modules.video_producer.httpx")
-def test_poll_shot_raises_on_failed_status(mock_httpx, monkeypatch):
-    monkeypatch.setenv("KLING_ACCESS_KEY_ID", "key123")
-    monkeypatch.setenv("KLING_SECRET_KEY", "secret456")
+def _resp(status_code=200, json_data=None):
+    resp = MagicMock()
+    resp.status_code = status_code
+    resp.json.return_value = json_data or {}
+    return resp
 
-    mock_resp = MagicMock()
-    mock_resp.json.return_value = {"data": {"task_status": "failed"}}
-    mock_httpx.get.return_value = mock_resp
 
-    from modules.video_producer import KlingVideoProducer
-    producer = KlingVideoProducer()
+def test_kling_submit_returns_the_task_id():
+    http = MagicMock()
+    http.post.return_value = _resp(200, {"data": {"task_id": "task_abc"}})
+
+    assert _kling(http)._submit_shot("Slow orbital pan") == "task_abc"
+    http.post.assert_called_once()
+
+
+def test_kling_submit_raises_with_the_response_body():
+    http = MagicMock()
+    http.post.return_value = _resp(400, {})
+    http.post.return_value.text = "bad prompt"
+
+    with pytest.raises(RuntimeError, match="bad prompt"):
+        _kling(http)._submit_shot("x")
+
+
+def test_kling_poll_returns_the_url_when_it_succeeds():
+    http = MagicMock()
+    http.get.return_value = _resp(200, {
+        "data": {"task_status": "succeed", "videos": [{"url": "https://cdn.kling.ai/v.mp4"}]},
+    })
+
+    assert _kling(http)._poll_shot("task_abc") == "https://cdn.kling.ai/v.mp4"
+
+
+def test_kling_poll_raises_on_a_failed_task():
+    http = MagicMock()
+    http.get.return_value = _resp(200, {"data": {"task_status": "failed"}})
 
     with pytest.raises(RuntimeError, match="failed"):
-        producer._poll_shot("task_abc")
+        _kling(http)._poll_shot("task_abc")
+
+
+def test_kling_poll_waits_while_the_task_is_still_running():
+    from config import KLING_MAX_POLL_ATTEMPTS
+    http = MagicMock()
+    http.get.return_value = _resp(200, {"data": {"task_status": "processing"}})
+
+    with pytest.raises(TimeoutError, match="timed out"):
+        _kling(http)._poll_shot("task_abc")
+
+    assert http.get.call_count == KLING_MAX_POLL_ATTEMPTS
+
+
+def test_kling_signs_requests_with_its_access_key():
+    import jwt
+    http = MagicMock()
+
+    token = _kling(http)._jwt_token()
+
+    assert jwt.decode(token, "secret456", algorithms=["HS256"])["iss"] == "key123"
 
 
 @patch("modules.video_producer.subprocess.run")
-def test_stitch_writes_concat_file_and_calls_ffmpeg(mock_run, monkeypatch, tmp_path):
-    monkeypatch.setenv("KLING_ACCESS_KEY_ID", "key123")
-    monkeypatch.setenv("KLING_SECRET_KEY", "secret456")
-
-    from modules.video_producer import KlingVideoProducer
-    producer = KlingVideoProducer()
+def test_stitch_writes_concat_file_and_calls_ffmpeg(mock_run, tmp_path):
+    producer = _kling(MagicMock())
     clip_paths = [str(tmp_path / "shot_00.mp4"), str(tmp_path / "shot_01.mp4")]
     output = str(tmp_path / "stitched.mp4")
 
@@ -179,15 +196,14 @@ def test_stitch_writes_concat_file_and_calls_ffmpeg(mock_run, monkeypatch, tmp_p
     assert output in args
 
 
-def test_jwt_token_contains_access_key_id(monkeypatch):
-    monkeypatch.setenv("KLING_ACCESS_KEY_ID", "my_key_id")
-    monkeypatch.setenv("KLING_SECRET_KEY", "my_secret")
+# -- Seedance 1.0 (legacy BytePlus SDK path) ----------------------------------
 
-    from modules.video_producer import KlingVideoProducer
-    import jwt
+def test_seedance_legacy_producer_accepts_an_injected_ark_client():
+    """No ARK_API_KEY needed: the SDK client is passed in."""
+    from modules.video_producer import SeedanceVideoProducer
+    client = MagicMock()
+    client.content_generation.tasks.create.return_value.id = "task_9"
 
-    producer = KlingVideoProducer()
-    token = producer._jwt_token()
-    decoded = jwt.decode(token, "my_secret", algorithms=["HS256"])
+    producer = SeedanceVideoProducer(client=client, sleep=lambda _s: None)
 
-    assert decoded["iss"] == "my_key_id"
+    assert producer._submit_shot("a slow orbit") == "task_9"

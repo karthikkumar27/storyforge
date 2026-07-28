@@ -4,6 +4,7 @@ import time
 import subprocess
 import tempfile
 from abc import ABC, abstractmethod
+from typing import Any
 
 import httpx
 
@@ -232,11 +233,25 @@ class BaseVideoProducer(ABC):
 
 
 class KlingVideoProducer(BaseVideoProducer):
-    def __init__(self):
+    """Kling AI, one prediction per shot. Legacy provider — kept working, not
+    on the active path for any current preset."""
+
+    def __init__(
+        self,
+        access_key_id: str | None = None,
+        secret_key: str | None = None,
+        *,
+        http: Any = httpx,
+        sleep: Any = time.sleep,
+    ):
         import jwt
         self._jwt = jwt
-        self.access_key_id = os.environ["KLING_ACCESS_KEY_ID"]
-        self.secret_key = os.environ["KLING_SECRET_KEY"]
+        # Credentials resolve at construction, but only when not supplied — so
+        # a test can build one without KLING_* in the environment.
+        self.access_key_id = access_key_id or os.environ["KLING_ACCESS_KEY_ID"]
+        self.secret_key = secret_key or os.environ["KLING_SECRET_KEY"]
+        self._http = http
+        self._sleep = sleep
 
     def _jwt_token(self) -> str:
         now = int(time.time())
@@ -250,7 +265,7 @@ class KlingVideoProducer(BaseVideoProducer):
         }
 
     def _submit_shot(self, prompt: str, reference_image_url: str | None = None) -> str:
-        resp = httpx.post(
+        resp = self._http.post(
             f"{KLING_BASE_URL}/v1/videos/text2video",
             headers=self._headers(),
             json={"model": KLING_MODEL, "prompt": prompt,
@@ -265,7 +280,7 @@ class KlingVideoProducer(BaseVideoProducer):
 
     def _poll_shot(self, task_id: str) -> str:
         for _ in range(KLING_MAX_POLL_ATTEMPTS):
-            resp = httpx.get(
+            resp = self._http.get(
                 f"{KLING_BASE_URL}/v1/videos/text2video/{task_id}",
                 headers=self._headers(),
                 timeout=30,
@@ -276,14 +291,21 @@ class KlingVideoProducer(BaseVideoProducer):
                 return data["videos"][0]["url"]
             if data["task_status"] == "failed":
                 raise RuntimeError(f"Kling task {task_id} failed")
-            time.sleep(KLING_POLL_INTERVAL_SEC)
+            self._sleep(KLING_POLL_INTERVAL_SEC)
         raise TimeoutError(f"Kling task {task_id} timed out after {KLING_MAX_POLL_ATTEMPTS} polls")
 
 
 class SeedanceVideoProducer(BaseVideoProducer):
-    def __init__(self):
+    """Seedance 1.0 Pro via the BytePlus Ark SDK. Legacy provider (v1)."""
+
+    def __init__(self, client: Any = None, *, sleep: Any = time.sleep):
+        self.client = client or self._build_client()
+        self._sleep = sleep
+
+    @staticmethod
+    def _build_client():
         from byteplussdkarkruntime import Ark
-        self.client = Ark(
+        return Ark(
             base_url=SEEDANCE_BASE_URL,
             api_key=os.environ["ARK_API_KEY"],
         )
@@ -332,7 +354,7 @@ class SeedanceVideoProducer(BaseVideoProducer):
                 raise RuntimeError(f"Seedance task {task_id} failed: {error_msg}")
             if attempt % 2 == 0:
                 print(f"[Seedance] Task {task_id} status: {status}, waiting...", flush=True)
-            time.sleep(SEEDANCE_POLL_INTERVAL_SEC)
+            self._sleep(SEEDANCE_POLL_INTERVAL_SEC)
         raise TimeoutError(
             f"Seedance task {task_id} timed out after {SEEDANCE_MAX_POLL_ATTEMPTS * SEEDANCE_POLL_INTERVAL_SEC}s"
         )

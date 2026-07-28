@@ -66,9 +66,20 @@ def _build_description(script_description: str) -> str:
 
 
 class YouTubeUploader:
-    def __init__(self):
+    def __init__(self, service=None, *, media_factory=MediaFileUpload):
+        """`service` is an authenticated YouTube Data API client.
+
+        Built from the environment when not supplied — which is also when the
+        OAuth token gets refreshed, so constructing this is a real side effect.
+        The orchestrator therefore builds it late, just before uploading.
+        """
+        self.youtube = service or self._authenticate()
+        self._media_factory = media_factory
+
+    @staticmethod
+    def _authenticate():
         token_data = json.loads(os.environ["YOUTUBE_OAUTH_TOKEN"])
-        self.creds = Credentials(
+        creds = Credentials(
             token=token_data.get("token"),
             refresh_token=token_data["refresh_token"],
             token_uri="https://oauth2.googleapis.com/token",
@@ -76,9 +87,9 @@ class YouTubeUploader:
             client_secret=os.environ["YOUTUBE_CLIENT_SECRET"],
             scopes=YOUTUBE_SCOPES,
         )
-        if not self.creds.valid:
-            self.creds.refresh(Request())
-        self.youtube = build("youtube", "v3", credentials=self.creds)
+        if not creds.valid:
+            creds.refresh(Request())
+        return build("youtube", "v3", credentials=creds)
 
     def upload(self, video_path: str, script_result: dict) -> str:
         # COPPA: every upload must declare audience. Kids presets (4/5/6) opt
@@ -102,7 +113,7 @@ class YouTubeUploader:
                 "selfDeclaredMadeForKids": made_for_kids,
             },
         }
-        media = MediaFileUpload(video_path, mimetype="video/mp4", resumable=True)
+        media = self._media_factory(video_path, mimetype="video/mp4", resumable=True)
         request = self.youtube.videos().insert(
             part="snippet,status", body=body, media_body=media
         )
