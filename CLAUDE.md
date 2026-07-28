@@ -63,6 +63,7 @@ idea-creator/
 ├── modules/
 │   ├── brief_generator.py    ← Story idea generation (Claude)
 │   ├── script_generator.py   ← Shot list + narration generation (Claude)
+│   ├── atlas_client.py       ← Atlas prediction protocol: submit → poll → outputs → download
 │   ├── image_generator.py    ← Reference image generation (GPT Image 2 / Seedream)
 │   ├── video_producer.py     ← Seedance/Kling/Atlas video producers (factory)
 │   ├── audio_mixer.py        ← ElevenLabs TTS + BGM mixing (used when not atlas)

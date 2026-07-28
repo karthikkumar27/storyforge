@@ -20,7 +20,6 @@ Usage:
     python scripts/generate_character_images.py --dry-run             # plan only, no API calls
 """
 import argparse
-import os
 import re
 import sys
 import time
@@ -32,69 +31,46 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from dotenv import load_dotenv
 load_dotenv()
 
-import httpx
-
-from config import ATLAS_BASE_URL, ATLAS_IMAGE_MODEL, ATLAS_POLL_INTERVAL_SEC, ATLAS_MAX_POLL_ATTEMPTS
+from config import ATLAS_IMAGE_MODEL
+from modules.atlas_client import AtlasClient, AtlasError
 from modules.characters_reader import CharactersReader
+from modules.image_generator import IMAGE_POLL_INTERVAL
 
 
 COST_PER_IMAGE = 0.006  # GPT Image 2 list price
 
+# Deliberately talks to Atlas directly rather than through AtlasImageGenerator:
+# that class prepends a "no humans" SAFE_PREFIX on retries, which is wrong for a
+# character roster. The retry ladder here softens the *appearance paragraph*
+# instead — see build_prompt().
+_atlas: AtlasClient | None = None
 
-# --- Direct Atlas image API call (bypasses AtlasImageGenerator's "no humans" SAFE_PREFIX) ---
-class _AtlasError(Exception):
-    """Carries full server-side detail so we can debug safety vs other failures."""
-    pass
+
+def _client() -> AtlasClient:
+    """Built on first use, not at import — so --dry-run works without an API key."""
+    global _atlas
+    if _atlas is None:
+        _atlas = AtlasClient()
+    return _atlas
 
 
 def call_atlas_image(prompt: str) -> str:
-    """Submit a single image generation, poll for result, return URL.
-    Raises _AtlasError with full message on any failure — no internal retry,
-    so the caller sees every error and decides how to respond.
+    """Submit one image generation and return its URL.
+
+    No internal retry — the caller runs its own ladder of progressively
+    softened prompts and wants to see every failure.
     """
-    headers = {
-        "Authorization": f"Bearer {os.environ['ATLASCLOUD_API_KEY']}",
-        "Content-Type": "application/json",
-    }
-    submit_resp = httpx.post(
-        f"{ATLAS_BASE_URL}/model/generateImage",
-        headers=headers,
-        json={
+    return _client().run(
+        "model/generateImage",
+        {
             "model": ATLAS_IMAGE_MODEL,
             "prompt": prompt,
             "width": 768,
             "height": 1344,
         },
-        timeout=60,
-    )
-    if submit_resp.status_code >= 400:
-        raise _AtlasError(f"submit HTTP {submit_resp.status_code}: {submit_resp.text[:600]}")
-
-    pred_id = submit_resp.json()["data"]["id"]
-
-    for _ in range(ATLAS_MAX_POLL_ATTEMPTS):
-        poll = httpx.get(
-            f"{ATLAS_BASE_URL}/model/prediction/{pred_id}",
-            headers=headers,
-            timeout=30,
-        )
-        if poll.status_code in (429, 500, 502, 503, 504):
-            time.sleep(15)
-            continue
-        if poll.status_code >= 400:
-            raise _AtlasError(f"poll HTTP {poll.status_code}: {poll.text[:600]}")
-        data = poll.json()["data"]
-        status = data["status"]
-        if status == "completed":
-            outputs = data.get("outputs", [])
-            if outputs:
-                return outputs[0]
-            raise _AtlasError(f"completed but no outputs: {data}")
-        if status == "failed":
-            raise _AtlasError(f"task failed: {data.get('error', 'unknown')}")
-        time.sleep(2)
-
-    raise _AtlasError(f"polling timed out after {ATLAS_MAX_POLL_ATTEMPTS * 2}s")
+        poll_interval=IMAGE_POLL_INTERVAL,
+        label="CharacterImage",
+    )[0]
 
 
 _GENDER_SOFTEN = [
@@ -358,7 +334,7 @@ def main():
             try:
                 url = call_atlas_image(prompt)
                 break
-            except _AtlasError as exc:
+            except AtlasError as exc:
                 last_err = str(exc)
                 print(f"  retry {retry + 1} failed:\n    {last_err}")
                 time.sleep(3 + retry * 2)

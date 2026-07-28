@@ -3,6 +3,49 @@
 from modules.sheet_access import InMemorySheet
 
 
+class StubAtlasClient:
+    """Stands in for AtlasClient. Records requests, replays scripted results.
+
+    Callers take a client rather than building one, so this substitutes at the
+    same seam production code uses -- no patching of module internals.
+    """
+
+    def __init__(self, outputs=None, errors=None):
+        self.outputs = list(outputs or ["https://cdn/output.png"])
+        self.errors = list(errors or [])   # one entry per run(): exception or None
+        self.calls = []
+        self.downloads = []
+
+    def _record(self, endpoint, body, poll_interval, label):
+        self.calls.append({
+            "endpoint": endpoint,
+            "body": body,
+            "poll_interval": poll_interval,
+            "label": label,
+        })
+
+    def run(self, endpoint, body, *, poll_interval=None, label="Atlas"):
+        self._record(endpoint, body, poll_interval, label)
+        if self.errors:
+            error = self.errors.pop(0)
+            if error is not None:
+                raise error
+        return list(self.outputs)
+
+    def submit(self, endpoint, body, *, label="Atlas"):
+        self._record(endpoint, body, None, label)
+        return "pred_stub"
+
+    def await_outputs(self, prediction_id, *, poll_interval=None, label="Atlas"):
+        return list(self.outputs)
+
+    def download(self, url, path, *, timeout=180):
+        self.downloads.append((url, path))
+        with open(path, "wb") as handle:
+            handle.write(b"fake-mp4")
+        return path
+
+
 class CountingSheet:
     """InMemorySheet that records how often it was asked to do network-ish work.
 
