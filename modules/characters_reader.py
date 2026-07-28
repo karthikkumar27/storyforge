@@ -18,35 +18,42 @@ Optional columns (if present, used for richer filtering):
     last_episode_appeared — auto-updated by pipeline
 """
 
-import json
 import os
 
-import gspread
+from modules.sheet_access import SheetSession
 
 
 class CharactersReader:
-    def __init__(self, sheet_id_env: str = "ALAN_STORY_CHARACTERS_GOOGLE_SHEET_ID"):
-        if sheet_id_env not in os.environ:
-            self.sheet = None
-            self.available = False
+    def __init__(
+        self,
+        session: SheetSession | None = None,
+        sheet_id_env: str = "ALAN_STORY_CHARACTERS_GOOGLE_SHEET_ID",
+    ):
+        """Read the roster through a SheetSession.
+
+        Pass the Run's session so the sheet is read once per Run rather than
+        once per reader — the brief generator, the script generator and the
+        orchestrator each construct one. Omitting it creates a single-use
+        session, which is safe but wasteful; never share one across Runs.
+        See docs/adr/0001-run-scoped-ledger-cache.md.
+        """
+        self.available = sheet_id_env in os.environ
+        if not self.available:
+            self._tab = None
             print(f"[Characters] {sheet_id_env} not set; reader is no-op", flush=True)
             return
-        creds_dict = json.loads(os.environ["GOOGLE_SHEETS_CREDENTIALS"])
-        sheet_id = os.environ[sheet_id_env]
-        self.sheet = gspread.service_account_from_dict(creds_dict).open_by_key(sheet_id).sheet1
-        self.available = True
+        # numericise=False keeps arcs_active as a string — Sheets otherwise
+        # strips the commas and returns "1,2,3,4,5" as the integer 12345.
+        self._tab = (session or SheetSession()).tab(sheet_id_env, numericise=False)
 
     def get_all_characters(self) -> list[dict]:
-        """Return every character row from the sheet, excluding empty rows.
-
-        Uses numericise_ignore=['all'] so comma-separated columns like
-        arcs_active stay as strings — Sheets otherwise strips commas and
-        returns them as giant integers (e.g. "1,2,3,4,5" → 12345).
-        """
+        """Return every character row from the sheet, excluding empty rows."""
         if not self.available:
             return []
-        records = self.sheet.get_all_records(numericise_ignore=["all"])
-        return [r for r in records if str(r.get("character_name", "")).strip()]
+        return [
+            r for r in self._tab.records
+            if str(r.get("character_name", "")).strip()
+        ]
 
     def get_active_for_arc(self, arc_number: int) -> list[dict]:
         """Return characters whose arcs_active list includes this arc, OR
@@ -106,14 +113,19 @@ class CharactersReader:
         return normal or transformed or None
 
 
-def format_characters_context(arc_number: int, episode_number: int) -> str:
+def format_characters_context(
+    arc_number: int,
+    episode_number: int,
+    session: SheetSession | None = None,
+) -> str:
     """Build a prompt-ready text block listing the characters who should be
     available for this episode, with their locked appearance paragraphs.
 
     Returned block is empty when the sheet is empty/unavailable, so callers
-    can always concatenate without checking.
+    can always concatenate without checking. Pass the Run's session so repeated
+    calls within one Run share a single read.
     """
-    reader = CharactersReader()
+    reader = CharactersReader(session=session)
     if not reader.available:
         return ""
     active = reader.get_active_for_arc(arc_number)

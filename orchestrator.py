@@ -65,11 +65,12 @@ def _run_single_shot_native() -> dict:
     download MP4 → archive → upload. No script gen, no per-shot storyboards,
     no stitching, no audio mixing.
     """
-    ledger = get_episode_ledger(SheetSession())
+    session = SheetSession()
+    ledger = get_episode_ledger(session)
     claim = ledger.claim_next()
 
     if claim.needs_brief:
-        brief_data = BriefGenerator().generate(**claim.brief_context.as_kwargs())
+        brief_data = BriefGenerator(session).generate(**claim.brief_context.as_kwargs())
         claim = ledger.start(brief_data)
 
     if claim.episode is None:
@@ -166,7 +167,8 @@ def run_pipeline() -> dict:
     # One SheetSession per Run — reads are cached for its lifetime and discarded
     # afterwards, so material edited between Runs is picked up.
     # See docs/adr/0001-run-scoped-ledger-cache.md.
-    ledger = get_episode_ledger(SheetSession())
+    session = SheetSession()
+    ledger = get_episode_ledger(session)
 
     # Routes to ALAN_STORY sheet for preset-7, main GOOGLE_SHEET for everything
     # else. Resolves the anti-repetition history, the Series so far, and the next
@@ -174,7 +176,7 @@ def run_pipeline() -> dict:
     claim = ledger.claim_next()
 
     if claim.needs_brief:
-        brief_data = BriefGenerator().generate(**claim.brief_context.as_kwargs())
+        brief_data = BriefGenerator(session).generate(**claim.brief_context.as_kwargs())
         claim = ledger.start(brief_data)
 
     if claim.episode is None:
@@ -186,7 +188,7 @@ def run_pipeline() -> dict:
     try:
         ledger.record(row_index, status="generating")
 
-        script_result = ScriptGenerator().generate(
+        script_result = ScriptGenerator(session).generate(
             episode.story_brief,
             episode.genre,
             arc_number=episode.arc_number,
@@ -202,7 +204,7 @@ def run_pipeline() -> dict:
         # each episode uses the right form's locked image.
         if ACTIVE_PRESET == "preset-7":
             from modules.characters_reader import CharactersReader
-            chars = CharactersReader()
+            chars = CharactersReader(session)
             form = str(episode.character_form).strip().lower() or "normal"
             ref_image_url = chars.get_main_ref_image_for_form(form)
             if ref_image_url:

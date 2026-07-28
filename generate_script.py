@@ -18,11 +18,12 @@ def main():
     # Same claim flow as the full pipeline, which is what makes this a genuine
     # rehearsal of it: anything that breaks claim_next() breaks here first, for
     # the price of a Claude call instead of a full episode.
-    ledger = get_episode_ledger(SheetSession())
+    session = SheetSession()
+    ledger = get_episode_ledger(session)
     claim = ledger.claim_next()
 
     if claim.needs_brief:
-        brief_data = BriefGenerator().generate(**claim.brief_context.as_kwargs())
+        brief_data = BriefGenerator(session).generate(**claim.brief_context.as_kwargs())
         claim = ledger.start(brief_data)
 
     if claim.episode is None:
@@ -34,7 +35,7 @@ def main():
     print(f"[ScriptOnly] Story: {episode.story_brief}", flush=True)
     print(f"[ScriptOnly] Genre: {episode.genre}", flush=True)
 
-    script = ScriptGenerator().generate(episode.story_brief, episode.genre)
+    script = ScriptGenerator(session).generate(episode.story_brief, episode.genre)
     ledger.record(episode.row_index, script=script["narrative"], status="script_ready")
 
     print(f"\n{'='*50}")

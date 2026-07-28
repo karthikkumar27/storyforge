@@ -152,8 +152,12 @@ CHARACTER FORM RULE (Chronicle of Zenith only):
 
 
 class BriefGenerator:
-    def __init__(self):
+    def __init__(self, session=None):
+        """`session` is the Run's SheetSession, used to read the character
+        roster. Pass it so the roster is read once per Run; omitting it falls
+        back to a single-use session."""
         self.client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+        self._session = session
 
     def generate(
         self,
@@ -322,7 +326,9 @@ class BriefGenerator:
             arc_info = resolve_arc(episode_number)
             arc_number = arc_info["arc_number"] if arc_info else None
             if arc_number:
-                characters_block = format_characters_context(arc_number, episode_number)
+                characters_block = format_characters_context(
+                    arc_number, episode_number, session=self._session
+                )
 
         # Preset-7 also gets a "character_form" field in the JSON output
         if ACTIVE_PRESET == "preset-7":

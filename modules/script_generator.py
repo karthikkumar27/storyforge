@@ -90,8 +90,12 @@ Return JSON only. No markdown fences, no explanation."""
 
 
 class ScriptGenerator:
-    def __init__(self):
+    def __init__(self, session=None):
+        """`session` is the Run's SheetSession, used to read the character
+        roster. Pass it so the roster is read once per Run; omitting it falls
+        back to a single-use session."""
         self.client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+        self._session = session
 
     def generate(self, story_brief: str, genre: str, arc_number: int | None = None, episode_number: int | None = None) -> dict:
         total_duration = SHOTS_COUNT * SHOT_DURATION
@@ -117,7 +121,9 @@ class ScriptGenerator:
         if ACTIVE_PRESET == "preset-7" and arc_number and episode_number:
             try:
                 from modules.characters_reader import format_characters_context
-                characters_block = format_characters_context(int(arc_number), int(episode_number))
+                characters_block = format_characters_context(
+                    int(arc_number), int(episode_number), session=self._session
+                )
                 if characters_block:
                     print(f"[ScriptGenerator] Roster injected: arc={arc_number}, ep={episode_number}", flush=True)
             except Exception as exc:

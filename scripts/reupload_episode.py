@@ -41,7 +41,8 @@ def main():
     if not video_path.exists():
         raise SystemExit(f"Video not found: {video_path}")
 
-    ledger = get_episode_ledger(SheetSession())
+    session = SheetSession()
+    ledger = get_episode_ledger(session)
     try:
         row = ledger.row(args.row)
     except IndexError as exc:
@@ -77,7 +78,7 @@ def main():
         return
 
     print("\n[1/3] Regenerating title/description/tags via ScriptGenerator (~$0.025)...")
-    script_result = ScriptGenerator().generate(story_brief, genre)
+    script_result = ScriptGenerator(session).generate(story_brief, genre)
     print(f"      → title:       {script_result['title']}")
     print(f"      → description: {len(script_result['description'])} chars")
     print(f"      → tags:        {len(script_result['tags'])} tags")
