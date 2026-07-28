@@ -1,15 +1,11 @@
-import json
-import os
 import random
-import re
 from datetime import date
 
-import anthropic
-
 from config import (
-    CLAUDE_MODEL, GENRES, BRIEF_SYSTEM_CONTEXT, PRESET_NAME,
+    GENRES, BRIEF_SYSTEM_CONTEXT, PRESET_NAME,
     STORY_MODE, SERIES_PARTS,
 )
+from modules.llm import Llm
 from modules.preset import active_preset
 from modules.skill_loader import load_skills
 from modules.arc_context import format_arc_context
@@ -27,19 +23,6 @@ _brief_skills = [
 ] + list(_preset.extra_skills)
 
 BRIEF_SKILLS = load_skills(*_brief_skills)
-
-
-def _extract_json(text: str) -> dict:
-    """Tolerant JSON extraction: handles markdown fences, preambles, trailing text."""
-    cleaned = text.strip()
-    fence = re.match(r"^```(?:json)?\s*(.*?)\s*```$", cleaned, re.DOTALL)
-    if fence:
-        cleaned = fence.group(1).strip()
-    start = cleaned.find("{")
-    end = cleaned.rfind("}")
-    if start == -1 or end == -1 or end < start:
-        raise ValueError(f"No JSON object found in model response: {text!r}")
-    return json.loads(cleaned[start : end + 1])
 
 
 STANDALONE_TEMPLATE = """{brief_context}
@@ -148,11 +131,11 @@ CHARACTER FORM RULE (Chronicle of Zenith only):
 
 
 class BriefGenerator:
-    def __init__(self, session=None):
+    def __init__(self, session=None, llm: Llm | None = None):
         """`session` is the Run's SheetSession, used to read the character
         roster. Pass it so the roster is read once per Run; omitting it falls
-        back to a single-use session."""
-        self.client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+        back to a single-use session. `llm` is the Claude seam."""
+        self._llm = llm or Llm()
         self._session = session
 
     def generate(
@@ -207,15 +190,9 @@ class BriefGenerator:
         )
         print(f"[BriefGenerator] Cinematic drone — scenario: {subject}", flush=True)
 
-        message = self.client.messages.create(
-            model=CLAUDE_MODEL,
-            max_tokens=600,
-            system=system_template,
-            messages=[{"role": "user", "content": user}],
+        result = self._llm.ask_json(
+            system_template, user, max_tokens=600, label="BriefGenerator",
         )
-        raw = message.content[0].text
-        print(f"[BriefGenerator] raw response: {raw[:400]!r}", flush=True)
-        result = _extract_json(raw)
         result["story_mode"] = "standalone"
         return result
 
@@ -249,15 +226,9 @@ class BriefGenerator:
         full_system = f"{system}\n\n{BRIEF_SKILLS}"
         print(f"[BriefGenerator] Standalone — Preset: {PRESET_NAME}, genre: {genre}, skills: {', '.join(_brief_skills)}", flush=True)
 
-        message = self.client.messages.create(
-            model=CLAUDE_MODEL,
-            max_tokens=500,
-            system=full_system,
-            messages=[{"role": "user", "content": prompt}],
+        result = self._llm.ask_json(
+            full_system, prompt, max_tokens=500, label="BriefGenerator",
         )
-        raw = message.content[0].text
-        print(f"[BriefGenerator] raw response: {raw!r}", flush=True)
-        result = _extract_json(raw)
         result["story_mode"] = "standalone"
         return result
 
@@ -368,15 +339,9 @@ class BriefGenerator:
         else:
             print(f"[BriefGenerator] Series — Part {part_number}/{SERIES_PARTS}, Preset: {PRESET_NAME}", flush=True)
 
-        message = self.client.messages.create(
-            model=CLAUDE_MODEL,
-            max_tokens=500,
-            system=full_system,
-            messages=[{"role": "user", "content": prompt}],
+        result = self._llm.ask_json(
+            full_system, prompt, max_tokens=500, label="BriefGenerator",
         )
-        raw = message.content[0].text
-        print(f"[BriefGenerator] raw response: {raw!r}", flush=True)
-        result = _extract_json(raw)
         result["story_mode"] = "series"
         result["series_id"] = series_id
         result["part_number"] = part_number

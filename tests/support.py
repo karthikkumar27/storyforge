@@ -3,6 +3,30 @@
 from modules.sheet_access import InMemorySheet
 
 
+class StubLlm:
+    """Stands in for modules.llm.Llm. Records prompts, replays scripted replies."""
+
+    def __init__(self, results=None, errors=None):
+        self.results = list(results or [])
+        self.errors = list(errors or [])   # one entry per call: exception or None
+        self.calls = []
+
+    def ask_json(self, system, user, *, max_tokens, label="Claude"):
+        self.calls.append({
+            "system": system,
+            "user": user,
+            "max_tokens": max_tokens,
+            "label": label,
+        })
+        if self.errors:
+            error = self.errors.pop(0)
+            if error is not None:
+                raise error
+        if self.results:
+            return self.results.pop(0)
+        return {}
+
+
 class StubAtlasClient:
     """Stands in for AtlasClient. Records requests, replays scripted results.
 

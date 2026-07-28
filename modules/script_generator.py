@@ -1,7 +1,5 @@
-import os
-import json
-import anthropic
-from config import CLAUDE_MODEL, SHOTS_COUNT, SHOT_DURATION, VIDEO_STYLE, PRESET_NAME, GENRES, BRIEF_SYSTEM_CONTEXT, DEFAULT_TAGS
+from config import SHOTS_COUNT, SHOT_DURATION, VIDEO_STYLE, PRESET_NAME, GENRES, BRIEF_SYSTEM_CONTEXT, DEFAULT_TAGS
+from modules.llm import Llm
 from modules.preset import active_preset
 from modules.skill_loader import load_skills
 
@@ -86,11 +84,11 @@ Return JSON only. No markdown fences, no explanation."""
 
 
 class ScriptGenerator:
-    def __init__(self, session=None):
+    def __init__(self, session=None, llm: Llm | None = None):
         """`session` is the Run's SheetSession, used to read the character
         roster. Pass it so the roster is read once per Run; omitting it falls
-        back to a single-use session."""
-        self.client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+        back to a single-use session. `llm` is the Claude seam."""
+        self._llm = llm or Llm()
         self._session = session
 
     def generate(self, story_brief: str, genre: str, arc_number: int | None = None, episode_number: int | None = None) -> dict:
@@ -143,14 +141,9 @@ class ScriptGenerator:
         print(f"[ScriptGenerator] Preset: {PRESET_NAME}, style: {VIDEO_STYLE}, skills loaded: {', '.join(_skills)}", flush=True)
         print(f"[ScriptGenerator] Target: {total_duration}s, {word_count_min}-{word_count_max} words", flush=True)
 
-        message = self.client.messages.create(
-            model=CLAUDE_MODEL,
-            max_tokens=2000,
-            system=full_system,
-            messages=[{"role": "user", "content": prompt}],
+        result = self._llm.ask_json(
+            full_system, prompt, max_tokens=2000, label="ScriptGenerator",
         )
-        raw = message.content[0].text.strip()
-        result = _extract_json(raw)
 
         # Prepend visual_style to every shot for consistent video generation
         style = result.get("visual_style", "")
@@ -170,16 +163,3 @@ class ScriptGenerator:
 
         return result
 
-
-def _extract_json(text: str) -> dict:
-    """Tolerant JSON extraction: handles markdown fences, preambles, trailing text."""
-    import re
-    cleaned = text.strip()
-    fence = re.match(r"^```(?:json)?\s*(.*?)\s*```$", cleaned, re.DOTALL)
-    if fence:
-        cleaned = fence.group(1).strip()
-    start = cleaned.find("{")
-    end = cleaned.rfind("}")
-    if start == -1 or end == -1 or end < start:
-        raise ValueError(f"No JSON object found in model response: {text!r}")
-    return json.loads(cleaned[start : end + 1])

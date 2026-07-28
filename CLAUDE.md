@@ -61,6 +61,7 @@ idea-creator/
 ├── generate_youtube_token.py ← One-time OAuth helper
 │
 ├── modules/
+│   ├── llm.py                ← Claude JSON seam: ask_json + tolerant extract + retry
 │   ├── brief_generator.py    ← Story idea generation (Claude)
 │   ├── script_generator.py   ← Shot list + narration generation (Claude)
 │   ├── atlas_client.py       ← Atlas prediction protocol: submit → poll → outputs → download
