@@ -23,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from dotenv import load_dotenv
 load_dotenv(override=True)
 
-from config import ACTIVE_PRESET
+from modules.preset import active_preset
 from modules.episode_ledger import get_episode_ledger
 from modules.sheet_access import SheetSession
 from modules.script_generator import ScriptGenerator
@@ -37,6 +37,7 @@ def main():
     ap.add_argument("--force", action="store_true", help="Allow re-upload even if row is already 'done'")
     args = ap.parse_args()
 
+    preset = active_preset()
     video_path = Path(args.video).expanduser().resolve()
     if not video_path.exists():
         raise SystemExit(f"Video not found: {video_path}")
@@ -65,7 +66,7 @@ def main():
         raise SystemExit(f"Row {row_index} has no story_brief — cannot regenerate metadata.")
 
     print(f"=== RE-UPLOAD ===")
-    print(f"  Preset:   {ACTIVE_PRESET}")
+    print(f"  Preset:   {preset.key} ({preset.name})")
     print(f"  Row:      {row_index}  (status={status!r})")
     print(f"  Title:    {title_raw}")
     print(f"  Episode#: {episode_number}")
@@ -85,9 +86,9 @@ def main():
 
     # Mirror orchestrator.py title formatting so re-uploads match what a
     # fresh pipeline run would have produced.
-    if ACTIVE_PRESET == "preset-7" and episode_number:
-        episode_title = script_result["title"]
-        script_result["title"] = f"The Chronicle of Zenith — Ep {episode_number}: {episode_title}"
+    numbered_title = preset.format_youtube_title(script_result["title"], episode_number)
+    if numbered_title:
+        script_result["title"] = numbered_title
         print(f"      → final YT title: {script_result['title']}")
     elif str(row.get("story_mode", "")).strip() == "series" and row.get("part_number"):
         part_num = row.get("part_number")

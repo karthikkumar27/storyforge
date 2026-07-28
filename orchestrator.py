@@ -3,7 +3,8 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
-from config import STORY_MODE, VIDEO_PROVIDER, ACTIVE_PRESET, GENRES, VIDEO_STYLE, DEFAULT_TAGS, _preset
+from config import STORY_MODE, VIDEO_PROVIDER, GENRES, VIDEO_STYLE, DEFAULT_TAGS
+from modules.preset import active_preset
 from modules.episode_ledger import get_episode_ledger
 from modules.sheet_access import SheetSession
 from modules.brief_generator import BriefGenerator
@@ -22,6 +23,8 @@ from modules.youtube_uploader import YouTubeUploader
 
 PROJECT_ROOT = Path(__file__).parent
 VIDEOS_DIR = PROJECT_ROOT / "videos"
+
+_preset = active_preset()
 
 
 
@@ -82,7 +85,7 @@ def _run_single_shot_native() -> dict:
     try:
         ledger.record(row_index, status="generating")
 
-        seedance2_cfg = _preset.get("seedance2") or {}
+        seedance2_cfg = _preset.seedance2 or {}
         mode = seedance2_cfg.get("mode", "t2v")
         prompt = episode.story_brief
         print(f"[Drone] Mode={mode}  brief ({len(prompt)} chars): {prompt[:200]}...", flush=True)
@@ -96,7 +99,7 @@ def _run_single_shot_native() -> dict:
                 print(f"[Drone] Reusing ref image from sheet: {ref_image_url[:80]}...", flush=True)
             else:
                 from modules.image_generator import AtlasImageGenerator
-                image_model = _preset.get("image_model")
+                image_model = _preset.image_model
                 print(f"[Drone] Generating loop-anchor still ({image_model or 'default'})...", flush=True)
                 ref_image_url = AtlasImageGenerator().generate(prompt, model=image_model)
                 ledger.record(row_index, ref_image_url=ref_image_url)
@@ -162,7 +165,7 @@ def run_pipeline() -> dict:
     # just generate a prompt, send it to Seedance 2.0 (which produces video +
     # audio in one call), and upload. Branched at the top so the rest of this
     # function stays focused on the shot-assembly flow.
-    if _preset.get("pipeline_mode") == "single_shot_native":
+    if _preset.is_single_shot_native:
         return _run_single_shot_native()
 
     # One SheetSession per Run — reads are cached for its lifetime and discarded
@@ -203,7 +206,7 @@ def run_pipeline() -> dict:
         # Preset-7 — form-aware lookup from the characters sheet (Alan vs Zenith).
         # This takes priority over legacy series-id reuse and preset defaults so
         # each episode uses the right form's locked image.
-        if ACTIVE_PRESET == "preset-7":
+        if _preset.serialized_canon:
             from modules.characters_reader import CharactersReader
             chars = CharactersReader(session)
             form = str(episode.character_form).strip().lower() or "normal"
@@ -226,8 +229,8 @@ def run_pipeline() -> dict:
                         break
 
         # Use preset's default reference image if configured
-        if not ref_image_url and _preset.get("default_ref_image"):
-            ref_image_url = _preset["default_ref_image"]
+        if not ref_image_url and _preset.default_ref_image:
+            ref_image_url = _preset.default_ref_image
             print(f"[Pipeline] Using preset default reference image", flush=True)
 
         # Generate new reference image only if we don't have one
@@ -248,7 +251,7 @@ def run_pipeline() -> dict:
         # that preserves the character's identity. Solves wallpaper-effect
         # and character drift across shots.
         storyboard_urls: list[str | None] | None = None
-        if _preset.get("per_shot_storyboards") and ref_image_url:
+        if _preset.per_shot_storyboards and ref_image_url:
             storyboard_urls = build_storyboards(
                 script_result["shots"], ref_image_url, style=VIDEO_STYLE,
             )
@@ -264,12 +267,12 @@ def run_pipeline() -> dict:
         #    layer ElevenLabs narration over Seedance's native audio (preset-7).
         # 2. VIDEO_PROVIDER=atlas without that config → use Seedance native only.
         # 3. Other providers → full ElevenLabs voiceover + BGM (legacy v1 path).
-        audio_mix_cfg = _preset.get("audio_mix") or {}
+        audio_mix_cfg = _preset.audio_mix or {}
         if audio_mix_cfg.get("mode") == "narration_over_native":
             # Auto-derive title/end card durations so narration stays inside
             # the story segment (doesn't overlap brand container audio stings)
-            title_duration = (_preset.get("title_card") or {}).get("duration", 0.0)
-            end_duration = (_preset.get("end_card") or {}).get("duration", 0.0)
+            title_duration = _preset.title_card_duration
+            end_duration = _preset.end_card_duration
             final_path = AudioMixer().mix_with_native_audio(
                 video_path,
                 script_result["narrative"],
@@ -288,10 +291,11 @@ def run_pipeline() -> dict:
         # Format YouTube title.
         # Preset-7 (Zenith): "The Chronicle of Zenith — Ep {N}: {Episode Title}"
         # Other series presets: "Series Title: Episode Title - Part N"
-        if ACTIVE_PRESET == "preset-7" and episode.episode_number:
-            ep_n = episode.episode_number
-            episode_title = script_result["title"]
-            script_result["title"] = f"The Chronicle of Zenith — Ep {ep_n}: {episode_title}"
+        numbered_title = _preset.format_youtube_title(
+            script_result["title"], episode.episode_number
+        )
+        if numbered_title:
+            script_result["title"] = numbered_title
             print(f"[Pipeline] YouTube title: {script_result['title']}", flush=True)
         elif episode.story_mode == "series" and episode.part_number:
             part_num = episode.part_number

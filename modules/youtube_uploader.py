@@ -11,7 +11,10 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload
 
-from config import YOUTUBE_CATEGORY_ID, YOUTUBE_SCOPES, DEFAULT_HASHTAGS, _preset
+from config import YOUTUBE_CATEGORY_ID, YOUTUBE_SCOPES, DEFAULT_HASHTAGS
+from modules.preset import active_preset
+
+_preset = active_preset()
 
 
 # Per Google's resumable-upload guidance: transient network/HTTP failures
@@ -46,7 +49,7 @@ def _build_description(script_description: str) -> str:
     AFTER. YouTube allows up to 15 hashtags in a description; we prefix with
     `#` if missing and de-duplicate case-insensitively.
     """
-    preset_hashtags = _preset.get("youtube_hashtags") or []
+    preset_hashtags = list(_preset.youtube_hashtags)
     all_hashtags = list(preset_hashtags) + list(DEFAULT_HASHTAGS)
     if not all_hashtags:
         return script_description
@@ -83,7 +86,7 @@ class YouTubeUploader:
         # defaults to False. Setting this explicitly (rather than omitting it)
         # avoids the "pending audience declaration" Studio state that blocks
         # end screens, cards, and other engagement features.
-        made_for_kids = bool(_preset.get("made_for_kids", False))
+        made_for_kids = _preset.made_for_kids
         audience_label = "MADE FOR KIDS" if made_for_kids else "Not made for kids"
         print(f"[YT] Audience declaration: {audience_label}", flush=True)
 

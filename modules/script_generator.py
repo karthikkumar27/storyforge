@@ -1,12 +1,15 @@
 import os
 import json
 import anthropic
-from config import CLAUDE_MODEL, SHOTS_COUNT, SHOT_DURATION, VIDEO_STYLE, PRESET_NAME, GENRES, BRIEF_SYSTEM_CONTEXT, ACTIVE_PRESET, DEFAULT_TAGS
+from config import CLAUDE_MODEL, SHOTS_COUNT, SHOT_DURATION, VIDEO_STYLE, PRESET_NAME, GENRES, BRIEF_SYSTEM_CONTEXT, DEFAULT_TAGS
+from modules.preset import active_preset
 from modules.skill_loader import load_skills
+
+_preset = active_preset()
 
 # --- SKILL LOADING -----------------------------------------------------------
 # Common skills apply to ALL presets — universal craft and consistency rules.
-# Preset-specific skills layer on top.
+# The active preset's `extra_skills` layer on top (kids specialist, series canon).
 COMMON_SKILLS = [
     "storytelling-craft",        # logline, want/need/wound/lie, value shifts, theme
     "episode-architecture",      # hook → development → turn → button format rules
@@ -15,14 +18,7 @@ COMMON_SKILLS = [
     "screenplay-director",       # scene blocking, screen direction, action choreography
     "youtube-shorts-optimizer",  # 3-sec hooks, title/description/tag patterns, retention
 ]
-_skills = list(COMMON_SKILLS)
-
-_is_kids = ACTIVE_PRESET in ("preset-4", "preset-5", "preset-6")
-if _is_kids:
-    _skills.append("kids-content-specialist")
-
-if ACTIVE_PRESET == "preset-7":
-    _skills.append("chronicle-of-zenith-canon")
+_skills = COMMON_SKILLS + list(_preset.extra_skills)
 
 SKILLS_CONTENT = load_skills(*_skills)
 
@@ -118,7 +114,7 @@ class ScriptGenerator:
         # in this arc so the LLM can composite supporting characters (e.g. Veth-Ka
         # as a column of pale gold light) into the right shots — not just the main.
         characters_block = ""
-        if ACTIVE_PRESET == "preset-7" and arc_number and episode_number:
+        if _preset.serialized_canon and arc_number and episode_number:
             try:
                 from modules.characters_reader import format_characters_context
                 characters_block = format_characters_context(

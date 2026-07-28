@@ -71,6 +71,8 @@ idea-creator/
 │   ├── episode_ledger.py     ← Episode Ledger — claim_next/start/record/finish/fail
 │   ├── sheet_access.py       ← Sheet seam: cached reads, batched writes, gspread + in-memory adapters
 │   ├── characters_reader.py  ← Preset-7 characters sheet (locked roster)
+│   ├── preset.py             ← Active Preset as a value: capabilities, not identity checks
+│   ├── storyboard.py         ← Per-shot storyboard frames (POV/wide detection + edit prompts)
 │   ├── arc_context.py        ← Preset-7 episode_number → arc_number resolver
 │   ├── skill_loader.py       ← Reads skills/*/SKILL.md and concatenates
 │   └── title_card_renderer.py ← PNG+MP3 → MP4 with content-hash cache

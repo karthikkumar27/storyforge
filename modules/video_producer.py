@@ -204,8 +204,8 @@ class BaseVideoProducer(ABC):
 
     def _get_title_card(self):
         """Resolve the active preset's title card (built once, cached forever)."""
-        from config import _preset
-        cfg = _preset.get("title_card")
+        from modules.preset import active_preset
+        cfg = active_preset().title_card
         if not cfg:
             return None
         from modules.title_card_renderer import build_card
@@ -214,8 +214,8 @@ class BaseVideoProducer(ABC):
 
     def _get_end_card(self):
         """Resolve the active preset's end card (built once, cached forever)."""
-        from config import _preset
-        cfg = _preset.get("end_card")
+        from modules.preset import active_preset
+        cfg = active_preset().end_card
         if not cfg:
             return None
         from modules.title_card_renderer import build_card

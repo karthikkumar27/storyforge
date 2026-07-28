@@ -190,6 +190,7 @@ PRESETS = {
         "story_mode": "series",
         "series_parts": 999,
         "youtube_category": "10",     # Music
+        "extra_skills": ["kids-content-specialist"],
         "made_for_kids": True,        # COPPA — toddler-targeted nursery rhymes
     },
     "preset-5": {
@@ -216,6 +217,7 @@ PRESETS = {
         "story_mode": "series",
         "series_parts": 999,
         "youtube_category": "24",     # Entertainment
+        "extra_skills": ["kids-content-specialist"],
         "made_for_kids": True,        # COPPA — kids shopkeeper-cat content
     },
     "preset-6": {
@@ -242,6 +244,7 @@ PRESETS = {
         "story_mode": "series",
         "series_parts": 999,
         "youtube_category": "27",     # Education
+        "extra_skills": ["kids-content-specialist"],
         "made_for_kids": True,        # COPPA — kids educational content
     },
     "preset-7": {
@@ -272,6 +275,19 @@ PRESETS = {
         "series_parts": 999,
         "youtube_category": "1",      # Film & Animation
         "per_shot_storyboards": True,
+        # --- capabilities (see modules/preset.py) ---------------------------
+        # These replace the `ACTIVE_PRESET == "preset-7"` checks that used to
+        # be scattered across seven files. A new serialized preset declares
+        # them here rather than adding another identity check in code.
+        "extra_skills": ["chronicle-of-zenith-canon"],
+        # Arc context + locked character roster + character_form selection.
+        "serialized_canon": True,
+        # Absolute Episode Numbers across the whole 200-episode run.
+        "tracks_episode_numbers": True,
+        # Published title format. {episode_number} and {title} are filled in.
+        "youtube_title_template": "The Chronicle of Zenith — Ep {episode_number}: {title}",
+        # Dedicated episode sheet, separate from the main GOOGLE_SHEET_ID.
+        "episode_sheet_env": "ALAN_STORY_GOOGLE_SHEET_ID",
         # Hashtags prepended to the YouTube description for discoverability.
         # First 3 also become clickable above the title on mobile.
         # Order matters — most specific/relevant first.

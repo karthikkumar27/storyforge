@@ -8,11 +8,14 @@ import anthropic
 
 from config import (
     CLAUDE_MODEL, GENRES, BRIEF_SYSTEM_CONTEXT, PRESET_NAME,
-    STORY_MODE, SERIES_PARTS, ACTIVE_PRESET,
+    STORY_MODE, SERIES_PARTS,
 )
+from modules.preset import active_preset
 from modules.skill_loader import load_skills
 from modules.arc_context import format_arc_context
 from modules.characters_reader import format_characters_context
+
+_preset = active_preset()
 
 # --- BRIEF SKILL LOADING ------------------------------------------------------
 # Brief generation needs storytelling craft (logline, want/need/lie) and the
@@ -21,14 +24,7 @@ from modules.characters_reader import format_characters_context
 _brief_skills = [
     "storytelling-craft",        # logline, character architecture, theme
     "episode-architecture",      # one-job-per-episode rule
-]
-
-_is_kids = ACTIVE_PRESET in ("preset-4", "preset-5", "preset-6")
-if _is_kids:
-    _brief_skills.append("kids-content-specialist")
-
-if ACTIVE_PRESET == "preset-7":
-    _brief_skills.append("chronicle-of-zenith-canon")
+] + list(_preset.extra_skills)
 
 BRIEF_SKILLS = load_skills(*_brief_skills)
 
@@ -167,8 +163,7 @@ class BriefGenerator:
     ) -> dict:
         # Single-shot native presets (e.g. preset-8 Drone Shorts) don't have
         # stories or shot lists. They produce one Seedance 2.0 prompt per video.
-        from config import _preset
-        if _preset.get("pipeline_mode") == "single_shot_native":
+        if _preset.is_single_shot_native:
             return self._generate_single_shot_prompt(past_stories or [])
 
         if STORY_MODE == "series":
@@ -320,7 +315,7 @@ class BriefGenerator:
         arc_context_block = ""
         characters_block = ""
         arc_number = None
-        if ACTIVE_PRESET == "preset-7" and episode_number:
+        if _preset.serialized_canon and episode_number:
             arc_context_block = format_arc_context(episode_number)
             from modules.arc_context import resolve_arc
             arc_info = resolve_arc(episode_number)
@@ -331,7 +326,7 @@ class BriefGenerator:
                 )
 
         # Preset-7 also gets a "character_form" field in the JSON output
-        if ACTIVE_PRESET == "preset-7":
+        if _preset.serialized_canon:
             extra_fields = ', "character_form": "normal|transformed|both"'
             form_instruction = PRESET_7_FORM_INSTRUCTION
         else:
@@ -390,7 +385,7 @@ class BriefGenerator:
         if arc_number is not None:
             result["arc_number"] = arc_number
         # Default character_form for preset-7 if Claude omitted it.
-        if ACTIVE_PRESET == "preset-7":
+        if _preset.serialized_canon:
             form = str(result.get("character_form", "")).strip().lower()
             if form not in ("normal", "transformed", "both"):
                 form = "normal"

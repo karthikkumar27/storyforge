@@ -2,7 +2,8 @@
 import pytest
 from unittest.mock import patch
 
-from config import _preset, GENRES, STORY_MODE, SERIES_PARTS
+from config import GENRES, STORY_MODE, SERIES_PARTS
+from modules.preset import active_preset
 from modules.episode_ledger import EpisodeLedger, LedgerSpec
 from modules.sheet_access import SheetTab
 from tests.support import CountingSheet
@@ -11,7 +12,7 @@ from tests.support import CountingSheet
 # generate a whole video in one call (preset-8). These tests exercise the
 # shot-assembly flow, so skip them rather than assert nonsense under preset-8.
 requires_shot_pipeline = pytest.mark.skipif(
-    _preset.get("pipeline_mode") == "single_shot_native",
+    active_preset().is_single_shot_native,
     reason="active preset uses the single-shot native flow",
 )
 

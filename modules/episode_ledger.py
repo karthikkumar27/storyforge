@@ -343,27 +343,29 @@ def get_episode_ledger(
     active (e.g. scripts/manual_episode.py).
     """
     import os
-    from config import ACTIVE_PRESET, GENRES, STORY_MODE, SERIES_PARTS
+    from modules.preset import active_preset
 
+    preset = active_preset()
     session = session or SheetSession()
 
     if sheet_env is None:
         sheet_env = "GOOGLE_SHEET_ID"
-        if ACTIVE_PRESET == "preset-7":
-            if "ALAN_STORY_GOOGLE_SHEET_ID" in os.environ:
-                sheet_env = "ALAN_STORY_GOOGLE_SHEET_ID"
-                print("[Ledger] Using Alan Story sheet (preset-7)", flush=True)
+        dedicated = preset.episode_sheet_env
+        if dedicated:
+            if dedicated in os.environ:
+                sheet_env = dedicated
+                print(f"[Ledger] Using dedicated episode sheet ({preset.name})", flush=True)
             else:
                 print(
-                    "[Ledger] WARNING: ALAN_STORY_GOOGLE_SHEET_ID not set; "
+                    f"[Ledger] WARNING: {dedicated} not set; "
                     "falling back to GOOGLE_SHEET_ID",
                     flush=True,
                 )
 
     spec = LedgerSpec(
-        genres=tuple(GENRES),
-        story_mode=STORY_MODE,
-        series_parts=SERIES_PARTS,
-        tracks_episode_numbers=(ACTIVE_PRESET == "preset-7"),
+        genres=preset.genres,
+        story_mode=preset.story_mode,
+        series_parts=preset.series_parts,
+        tracks_episode_numbers=preset.tracks_episode_numbers,
     )
     return EpisodeLedger(session.tab(sheet_env), spec)
