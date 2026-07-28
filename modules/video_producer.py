@@ -4,20 +4,21 @@ import time
 import subprocess
 import tempfile
 from abc import ABC, abstractmethod
+from typing import Any
 
 import httpx
 
 from config import (
     VIDEO_PROVIDER,
     SHOT_DURATION, ASPECT_RATIO,
-    ATLAS_BASE_URL, ATLAS_VIDEO_MODEL_I2V, ATLAS_VIDEO_MODEL_T2V,
+    ATLAS_VIDEO_MODEL_I2V, ATLAS_VIDEO_MODEL_T2V,
     ATLAS_VIDEO_MODEL_SEEDANCE_2_T2V, ATLAS_VIDEO_MODEL_SEEDANCE_2_I2V,
     ATLAS_VIDEO_MODEL_SEEDANCE_1_5_T2V_FAST,
-    ATLAS_POLL_INTERVAL_SEC, ATLAS_MAX_POLL_ATTEMPTS,
     KLING_BASE_URL, KLING_MODEL, KLING_POLL_INTERVAL_SEC, KLING_MAX_POLL_ATTEMPTS,
     SEEDANCE_MODEL, SEEDANCE_BASE_URL, SEEDANCE_RESOLUTION,
     SEEDANCE_POLL_INTERVAL_SEC, SEEDANCE_MAX_POLL_ATTEMPTS,
 )
+from modules.atlas_client import AtlasClient
 
 
 class BaseVideoProducer(ABC):
@@ -204,8 +205,8 @@ class BaseVideoProducer(ABC):
 
     def _get_title_card(self):
         """Resolve the active preset's title card (built once, cached forever)."""
-        from config import _preset
-        cfg = _preset.get("title_card")
+        from modules.preset import active_preset
+        cfg = active_preset().title_card
         if not cfg:
             return None
         from modules.title_card_renderer import build_card
@@ -214,8 +215,8 @@ class BaseVideoProducer(ABC):
 
     def _get_end_card(self):
         """Resolve the active preset's end card (built once, cached forever)."""
-        from config import _preset
-        cfg = _preset.get("end_card")
+        from modules.preset import active_preset
+        cfg = active_preset().end_card
         if not cfg:
             return None
         from modules.title_card_renderer import build_card
@@ -232,11 +233,25 @@ class BaseVideoProducer(ABC):
 
 
 class KlingVideoProducer(BaseVideoProducer):
-    def __init__(self):
+    """Kling AI, one prediction per shot. Legacy provider — kept working, not
+    on the active path for any current preset."""
+
+    def __init__(
+        self,
+        access_key_id: str | None = None,
+        secret_key: str | None = None,
+        *,
+        http: Any = httpx,
+        sleep: Any = time.sleep,
+    ):
         import jwt
         self._jwt = jwt
-        self.access_key_id = os.environ["KLING_ACCESS_KEY_ID"]
-        self.secret_key = os.environ["KLING_SECRET_KEY"]
+        # Credentials resolve at construction, but only when not supplied — so
+        # a test can build one without KLING_* in the environment.
+        self.access_key_id = access_key_id or os.environ["KLING_ACCESS_KEY_ID"]
+        self.secret_key = secret_key or os.environ["KLING_SECRET_KEY"]
+        self._http = http
+        self._sleep = sleep
 
     def _jwt_token(self) -> str:
         now = int(time.time())
@@ -250,7 +265,7 @@ class KlingVideoProducer(BaseVideoProducer):
         }
 
     def _submit_shot(self, prompt: str, reference_image_url: str | None = None) -> str:
-        resp = httpx.post(
+        resp = self._http.post(
             f"{KLING_BASE_URL}/v1/videos/text2video",
             headers=self._headers(),
             json={"model": KLING_MODEL, "prompt": prompt,
@@ -265,7 +280,7 @@ class KlingVideoProducer(BaseVideoProducer):
 
     def _poll_shot(self, task_id: str) -> str:
         for _ in range(KLING_MAX_POLL_ATTEMPTS):
-            resp = httpx.get(
+            resp = self._http.get(
                 f"{KLING_BASE_URL}/v1/videos/text2video/{task_id}",
                 headers=self._headers(),
                 timeout=30,
@@ -276,14 +291,21 @@ class KlingVideoProducer(BaseVideoProducer):
                 return data["videos"][0]["url"]
             if data["task_status"] == "failed":
                 raise RuntimeError(f"Kling task {task_id} failed")
-            time.sleep(KLING_POLL_INTERVAL_SEC)
+            self._sleep(KLING_POLL_INTERVAL_SEC)
         raise TimeoutError(f"Kling task {task_id} timed out after {KLING_MAX_POLL_ATTEMPTS} polls")
 
 
 class SeedanceVideoProducer(BaseVideoProducer):
-    def __init__(self):
+    """Seedance 1.0 Pro via the BytePlus Ark SDK. Legacy provider (v1)."""
+
+    def __init__(self, client: Any = None, *, sleep: Any = time.sleep):
+        self.client = client or self._build_client()
+        self._sleep = sleep
+
+    @staticmethod
+    def _build_client():
         from byteplussdkarkruntime import Ark
-        self.client = Ark(
+        return Ark(
             base_url=SEEDANCE_BASE_URL,
             api_key=os.environ["ARK_API_KEY"],
         )
@@ -332,29 +354,25 @@ class SeedanceVideoProducer(BaseVideoProducer):
                 raise RuntimeError(f"Seedance task {task_id} failed: {error_msg}")
             if attempt % 2 == 0:
                 print(f"[Seedance] Task {task_id} status: {status}, waiting...", flush=True)
-            time.sleep(SEEDANCE_POLL_INTERVAL_SEC)
+            self._sleep(SEEDANCE_POLL_INTERVAL_SEC)
         raise TimeoutError(
             f"Seedance task {task_id} timed out after {SEEDANCE_MAX_POLL_ATTEMPTS * SEEDANCE_POLL_INTERVAL_SEC}s"
         )
 
 
 class AtlasVideoProducer(BaseVideoProducer):
-    """Seedance 2.0 via Atlas Cloud unified API."""
+    """Seedance 1.5 Pro via Atlas Cloud, one prediction per shot."""
 
-    def __init__(self):
-        self.api_key = os.environ["ATLASCLOUD_API_KEY"]
-        self.headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
+    def __init__(self, client: AtlasClient | None = None):
+        self._atlas = client or AtlasClient()
 
     def _submit_shot(self, prompt: str, reference_image_url: str | None = None) -> str:
         if reference_image_url:
             model = ATLAS_VIDEO_MODEL_I2V
-            print(f"[Atlas] Using image-to-video (shot 1 with reference)", flush=True)
+            print("[Atlas] Using image-to-video (shot with reference)", flush=True)
         else:
             model = ATLAS_VIDEO_MODEL_T2V
-            print(f"[Atlas] Using text-to-video (no reference image)", flush=True)
+            print("[Atlas] Using text-to-video (no reference image)", flush=True)
 
         body = {
             "model": model,
@@ -366,51 +384,10 @@ class AtlasVideoProducer(BaseVideoProducer):
         if reference_image_url:
             body["image"] = reference_image_url
 
-        resp = httpx.post(
-            f"{ATLAS_BASE_URL}/model/generateVideo",
-            headers=self.headers,
-            json=body,
-            timeout=60,
-        )
-        if resp.status_code >= 400:
-            raise RuntimeError(f"Atlas Cloud submit failed: HTTP {resp.status_code} — {resp.text[:500]}")
-        prediction_id = resp.json()["data"]["id"]
-        print(f"[Atlas] Task created: {prediction_id}", flush=True)
-        return prediction_id
+        return self._atlas.submit("model/generateVideo", body, label="Atlas")
 
     def _poll_shot(self, task_id: str) -> str:
-        for attempt in range(ATLAS_MAX_POLL_ATTEMPTS):
-            resp = httpx.get(
-                f"{ATLAS_BASE_URL}/model/prediction/{task_id}",
-                headers=self.headers,
-                timeout=30,
-            )
-            if resp.status_code in (400, 429, 500, 502, 503, 504):
-                print(f"[Atlas] HTTP {resp.status_code}: {resp.text[:300]}", flush=True)
-                if resp.status_code == 400:
-                    raise RuntimeError(f"Atlas poll failed: HTTP 400 — {resp.text[:500]}")
-                time.sleep(30)
-                continue
-            resp.raise_for_status()
-            data = resp.json()["data"]
-            status = data["status"]
-
-            if status == "completed":
-                outputs = data.get("outputs", [])
-                if outputs:
-                    print(f"[Atlas] Task {task_id} completed", flush=True)
-                    return outputs[0]
-                raise RuntimeError(f"Atlas task {task_id} completed but no outputs: {data}")
-            if status == "failed":
-                error = data.get("error", "unknown error")
-                raise RuntimeError(f"Atlas task {task_id} failed: {error}")
-            if attempt % 5 == 0:
-                print(f"[Atlas] Task {task_id} status: {status}, waiting...", flush=True)
-            time.sleep(ATLAS_POLL_INTERVAL_SEC)
-
-        raise TimeoutError(
-            f"Atlas task {task_id} timed out after {ATLAS_MAX_POLL_ATTEMPTS * ATLAS_POLL_INTERVAL_SEC}s"
-        )
+        return self._atlas.await_outputs(task_id, label="Atlas")[0]
 
 
 def create_video_producer() -> BaseVideoProducer:
@@ -441,12 +418,8 @@ class AtlasSeedance2I2VLoopProducer:
     orchestrator skips the audio mixer too.
     """
 
-    def __init__(self):
-        self.api_key = os.environ["ATLASCLOUD_API_KEY"]
-        self.headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
+    def __init__(self, client: AtlasClient | None = None):
+        self._atlas = client or AtlasClient()
 
     def produce(self, image_url: str, motion_prompt: str, params: dict) -> str:
         """Submit a Seedance 2.0 i2v loop request, poll, download, return
@@ -480,84 +453,14 @@ class AtlasSeedance2I2VLoopProducer:
             flush=True,
         )
 
-        resp = httpx.post(
-            f"{ATLAS_BASE_URL}/model/generateVideo",
-            headers=self.headers,
-            json=body,
-            timeout=60,
-        )
-        if resp.status_code >= 400:
-            raise RuntimeError(f"Seedance 2.0 i2v submit failed: HTTP {resp.status_code} — {resp.text[:500]}")
-        prediction_id = resp.json()["data"]["id"]
-        print(f"[Seedance2-Loop] Task created: {prediction_id}", flush=True)
-
-        # Poll. Seedance 2.0 i2v at 12s/720p-SR typically completes in 60-180s.
-        video_url = None
-        for attempt in range(ATLAS_MAX_POLL_ATTEMPTS):
-            try:
-                pr = httpx.get(
-                    f"{ATLAS_BASE_URL}/model/prediction/{prediction_id}",
-                    headers=self.headers,
-                    timeout=30,
-                )
-            except httpx.TimeoutException as exc:
-                # Atlas prediction endpoint sometimes hangs >30s under load.
-                # Don't kill the run — the task is still cooking on Atlas's side
-                # and we can pick it back up on the next poll cycle.
-                print(f"[Atlas-Poll] Read timeout ({exc.__class__.__name__}), retrying in {ATLAS_POLL_INTERVAL_SEC}s...", flush=True)
-                time.sleep(ATLAS_POLL_INTERVAL_SEC)
-                continue
-            # Same pattern as t2v producer: Atlas uses 400/500 for hard task
-            # failures (content filter, fetch failure, model error). Distinguish
-            # those from genuine transient gateway issues by peeking at the body.
-            if pr.status_code in (502, 503, 504):
-                print(f"[Seedance2-Loop] Poll HTTP {pr.status_code} (gateway), backing off 30s...", flush=True)
-                time.sleep(30)
-                continue
-            if pr.status_code == 429:
-                print(f"[Seedance2-Loop] Poll HTTP 429 (rate limit), backing off 60s...", flush=True)
-                time.sleep(60)
-                continue
-            if pr.status_code in (400, 500):
-                body = pr.text[:500]
-                try:
-                    payload = pr.json()
-                    inner = (payload.get("data") or {}).get("status")
-                    msg = payload.get("message") or payload.get("error") or ""
-                    if inner == "failed" or msg:
-                        print(f"[Seedance2-Loop] Poll HTTP {pr.status_code} (TASK FAILED): {body}", flush=True)
-                        raise RuntimeError(f"Seedance 2.0 i2v task failed: {msg or body}")
-                except ValueError:
-                    pass
-                print(f"[Seedance2-Loop] Poll HTTP {pr.status_code} (unstructured), backing off 30s...", flush=True)
-                time.sleep(30)
-                continue
-            pr.raise_for_status()
-            data = pr.json()["data"]
-            status = data.get("status")
-            if status == "completed":
-                outputs = data.get("outputs") or []
-                if not outputs:
-                    raise RuntimeError(f"Seedance 2.0 i2v completed but no outputs: {data}")
-                video_url = outputs[0]
-                print(f"[Seedance2-Loop] Completed: {video_url[:80]}...", flush=True)
-                break
-            if status == "failed":
-                raise RuntimeError(f"Seedance 2.0 i2v failed: {data.get('error', 'unknown')}")
-            if attempt % 4 == 0:
-                print(f"[Seedance2-Loop] Status={status}, waiting...", flush=True)
-            time.sleep(ATLAS_POLL_INTERVAL_SEC)
-        else:
-            raise TimeoutError(f"Seedance 2.0 i2v timed out after ~{ATLAS_MAX_POLL_ATTEMPTS * ATLAS_POLL_INTERVAL_SEC}s")
+        video_url = self._atlas.run(
+            "model/generateVideo", body, label="Seedance2-Loop",
+        )[0]
 
         # Download the looping MP4 to a temp file.
         tmp_dir = tempfile.mkdtemp(prefix="seedance2-loop-")
         raw_path = os.path.join(tmp_dir, "drone-loop-raw.mp4")
-        with httpx.stream("GET", video_url, timeout=180) as dr:
-            dr.raise_for_status()
-            with open(raw_path, "wb") as f:
-                for chunk in dr.iter_bytes(chunk_size=65536):
-                    f.write(chunk)
+        self._atlas.download(video_url, raw_path)
         size_mb = os.path.getsize(raw_path) / 1024 / 1024
         print(f"[Seedance2-Loop] Downloaded {size_mb:.1f} MB → {raw_path}", flush=True)
 
@@ -638,12 +541,8 @@ class AtlasSeedance2T2VProducer:
     same call (generate_audio=True), so the orchestrator skips the audio mixer.
     """
 
-    def __init__(self):
-        self.api_key = os.environ["ATLASCLOUD_API_KEY"]
-        self.headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
+    def __init__(self, client: AtlasClient | None = None):
+        self._atlas = client or AtlasClient()
 
     def produce(self, prompt: str, params: dict) -> str:
         body = {
@@ -663,88 +562,13 @@ class AtlasSeedance2T2VProducer:
             flush=True,
         )
 
-        resp = httpx.post(
-            f"{ATLAS_BASE_URL}/model/generateVideo",
-            headers=self.headers,
-            json=body,
-            timeout=60,
-        )
-        if resp.status_code >= 400:
-            raise RuntimeError(f"Seedance 2.0 t2v submit failed: HTTP {resp.status_code} — {resp.text[:500]}")
-        prediction_id = resp.json()["data"]["id"]
-        print(f"[Seedance2-T2V] Task created: {prediction_id}", flush=True)
-
-        video_url = None
-        for attempt in range(ATLAS_MAX_POLL_ATTEMPTS):
-            try:
-                pr = httpx.get(
-                    f"{ATLAS_BASE_URL}/model/prediction/{prediction_id}",
-                    headers=self.headers,
-                    timeout=30,
-                )
-            except httpx.TimeoutException as exc:
-                # Atlas prediction endpoint sometimes hangs >30s under load.
-                # Don't kill the run — the task is still cooking on Atlas's side
-                # and we can pick it back up on the next poll cycle.
-                print(f"[Atlas-Poll] Read timeout ({exc.__class__.__name__}), retrying in {ATLAS_POLL_INTERVAL_SEC}s...", flush=True)
-                time.sleep(ATLAS_POLL_INTERVAL_SEC)
-                continue
-            # Atlas serves hard task failures (content filter, model error,
-            # fetch failure, etc.) as HTTP 400/500 on the prediction endpoint,
-            # with the actual reason in the JSON body. Treat those as terminal.
-            # Only retry on codes that are unambiguously transient at the
-            # network/gateway layer.
-            if pr.status_code in (502, 503, 504):
-                print(f"[Seedance2-T2V] Poll HTTP {pr.status_code} (gateway), backing off 30s...", flush=True)
-                time.sleep(30)
-                continue
-            if pr.status_code == 429:
-                print(f"[Seedance2-T2V] Poll HTTP 429 (rate limit), backing off 60s...", flush=True)
-                time.sleep(60)
-                continue
-            if pr.status_code in (400, 500):
-                # Parse the body — if it's a structured task-failure response,
-                # surface the actual reason. If it's an unstructured server
-                # error, fall through to retry as transient.
-                body = pr.text[:500]
-                try:
-                    payload = pr.json()
-                    inner = (payload.get("data") or {}).get("status")
-                    msg = payload.get("message") or payload.get("error") or ""
-                    if inner == "failed" or msg:
-                        # Hard failure — task is terminal, no point retrying
-                        print(f"[Seedance2-T2V] Poll HTTP {pr.status_code} (TASK FAILED): {body}", flush=True)
-                        raise RuntimeError(f"Seedance 2.0 t2v task failed: {msg or body}")
-                except ValueError:
-                    pass  # not JSON — treat as transient
-                print(f"[Seedance2-T2V] Poll HTTP {pr.status_code} (unstructured), backing off 30s...", flush=True)
-                time.sleep(30)
-                continue
-            pr.raise_for_status()
-            data = pr.json()["data"]
-            status = data.get("status")
-            if status == "completed":
-                outputs = data.get("outputs") or []
-                if not outputs:
-                    raise RuntimeError(f"Seedance 2.0 t2v completed but no outputs: {data}")
-                video_url = outputs[0]
-                print(f"[Seedance2-T2V] Completed: {video_url[:80]}...", flush=True)
-                break
-            if status == "failed":
-                raise RuntimeError(f"Seedance 2.0 t2v failed: {data.get('error', 'unknown')}")
-            if attempt % 4 == 0:
-                print(f"[Seedance2-T2V] Status={status}, waiting...", flush=True)
-            time.sleep(ATLAS_POLL_INTERVAL_SEC)
-        else:
-            raise TimeoutError(f"Seedance 2.0 t2v timed out after ~{ATLAS_MAX_POLL_ATTEMPTS * ATLAS_POLL_INTERVAL_SEC}s")
+        video_url = self._atlas.run(
+            "model/generateVideo", body, label="Seedance2-T2V",
+        )[0]
 
         tmp_dir = tempfile.mkdtemp(prefix="seedance2-t2v-")
         out_path = os.path.join(tmp_dir, "drone.mp4")
-        with httpx.stream("GET", video_url, timeout=180) as dr:
-            dr.raise_for_status()
-            with open(out_path, "wb") as f:
-                for chunk in dr.iter_bytes(chunk_size=65536):
-                    f.write(chunk)
+        self._atlas.download(video_url, out_path)
         size_mb = os.path.getsize(out_path) / 1024 / 1024
         print(f"[Seedance2-T2V] Downloaded {size_mb:.1f} MB → {out_path}", flush=True)
         return out_path
@@ -764,12 +588,8 @@ class AtlasSeedance1_5T2VFastProducer:
       - no `generate_audio`, `watermark`, or `return_last_frame` fields
     """
 
-    def __init__(self):
-        self.api_key = os.environ["ATLASCLOUD_API_KEY"]
-        self.headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
+    def __init__(self, client: AtlasClient | None = None):
+        self._atlas = client or AtlasClient()
 
     def produce(self, prompt: str, params: dict) -> str:
         body = {
@@ -785,86 +605,13 @@ class AtlasSeedance1_5T2VFastProducer:
             flush=True,
         )
 
-        resp = httpx.post(
-            f"{ATLAS_BASE_URL}/model/generateVideo",
-            headers=self.headers,
-            json=body,
-            timeout=60,
-        )
-        if resp.status_code >= 400:
-            raise RuntimeError(
-                f"Seedance 1.5-fast submit failed: HTTP {resp.status_code} — {resp.text[:500]}"
-            )
-        prediction_id = resp.json()["data"]["id"]
-        print(f"[Seedance1.5-Fast] Task created: {prediction_id}", flush=True)
-
-        video_url = None
-        for attempt in range(ATLAS_MAX_POLL_ATTEMPTS):
-            try:
-                pr = httpx.get(
-                    f"{ATLAS_BASE_URL}/model/prediction/{prediction_id}",
-                    headers=self.headers,
-                    timeout=30,
-                )
-            except httpx.TimeoutException as exc:
-                # Atlas prediction endpoint sometimes hangs >30s under load.
-                # Don't kill the run — the task is still cooking on Atlas's side
-                # and we can pick it back up on the next poll cycle.
-                print(f"[Atlas-Poll] Read timeout ({exc.__class__.__name__}), retrying in {ATLAS_POLL_INTERVAL_SEC}s...", flush=True)
-                time.sleep(ATLAS_POLL_INTERVAL_SEC)
-                continue
-            # Same Atlas behavior as Seedance 2.0: hard task failures surface as
-            # HTTP 400/500 with structured JSON, transient network issues come
-            # back as 502/503/504. Treat them differently.
-            if pr.status_code in (502, 503, 504):
-                print(f"[Seedance1.5-Fast] Poll HTTP {pr.status_code} (gateway), backing off 30s...", flush=True)
-                time.sleep(30)
-                continue
-            if pr.status_code == 429:
-                print(f"[Seedance1.5-Fast] Poll HTTP 429 (rate limit), backing off 60s...", flush=True)
-                time.sleep(60)
-                continue
-            if pr.status_code in (400, 500):
-                body_txt = pr.text[:500]
-                try:
-                    payload = pr.json()
-                    inner = (payload.get("data") or {}).get("status")
-                    msg = payload.get("message") or payload.get("error") or ""
-                    if inner == "failed" or msg:
-                        print(f"[Seedance1.5-Fast] Poll HTTP {pr.status_code} (TASK FAILED): {body_txt}", flush=True)
-                        raise RuntimeError(f"Seedance 1.5-fast task failed: {msg or body_txt}")
-                except ValueError:
-                    pass  # not JSON — treat as transient
-                print(f"[Seedance1.5-Fast] Poll HTTP {pr.status_code} (unstructured), backing off 30s...", flush=True)
-                time.sleep(30)
-                continue
-            pr.raise_for_status()
-            data = pr.json()["data"]
-            status = data.get("status")
-            if status == "completed":
-                outputs = data.get("outputs") or []
-                if not outputs:
-                    raise RuntimeError(f"Seedance 1.5-fast completed but no outputs: {data}")
-                video_url = outputs[0]
-                print(f"[Seedance1.5-Fast] Completed: {video_url[:80]}...", flush=True)
-                break
-            if status == "failed":
-                raise RuntimeError(f"Seedance 1.5-fast failed: {data.get('error', 'unknown')}")
-            if attempt % 4 == 0:
-                print(f"[Seedance1.5-Fast] Status={status}, waiting...", flush=True)
-            time.sleep(ATLAS_POLL_INTERVAL_SEC)
-        else:
-            raise TimeoutError(
-                f"Seedance 1.5-fast timed out after ~{ATLAS_MAX_POLL_ATTEMPTS * ATLAS_POLL_INTERVAL_SEC}s"
-            )
+        video_url = self._atlas.run(
+            "model/generateVideo", body, label="Seedance1.5-Fast",
+        )[0]
 
         tmp_dir = tempfile.mkdtemp(prefix="seedance1.5-fast-")
         out_path = os.path.join(tmp_dir, "drone.mp4")
-        with httpx.stream("GET", video_url, timeout=180) as dr:
-            dr.raise_for_status()
-            with open(out_path, "wb") as f:
-                for chunk in dr.iter_bytes(chunk_size=65536):
-                    f.write(chunk)
+        self._atlas.download(video_url, out_path)
         size_mb = os.path.getsize(out_path) / 1024 / 1024
         print(f"[Seedance1.5-Fast] Downloaded {size_mb:.1f} MB → {out_path}", flush=True)
         return out_path

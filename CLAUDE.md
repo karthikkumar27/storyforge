@@ -55,20 +55,25 @@ Set `VIDEO_PROVIDER=atlas` and `IMAGE_PROVIDER=atlas` in `.env`. To revert to v1
 ```
 idea-creator/
 ├── main.py                   ← Flask entry point (load_dotenv MUST be first)
-├── orchestrator.py           ← Pipeline runner — one episode end-to-end
+├── orchestrator.py           ← Pipeline runner — one episode end-to-end (takes a Deps bundle)
 ├── config.py                 ← All presets, providers, model IDs, atlas/byteplus URLs
 ├── generate_script.py        ← CLI: brief + script preview without video
 ├── generate_youtube_token.py ← One-time OAuth helper
 │
 ├── modules/
+│   ├── llm.py                ← Claude JSON seam: ask_json + tolerant extract + retry
 │   ├── brief_generator.py    ← Story idea generation (Claude)
 │   ├── script_generator.py   ← Shot list + narration generation (Claude)
+│   ├── atlas_client.py       ← Atlas prediction protocol: submit → poll → outputs → download
 │   ├── image_generator.py    ← Reference image generation (GPT Image 2 / Seedream)
 │   ├── video_producer.py     ← Seedance/Kling/Atlas video producers (factory)
 │   ├── audio_mixer.py        ← ElevenLabs TTS + BGM mixing (used when not atlas)
 │   ├── youtube_uploader.py   ← OAuth2 + chunked upload
-│   ├── gsheet_reader.py      ← Sheet I/O + preset-aware sheet routing
+│   ├── episode_ledger.py     ← Episode Ledger — claim_next/start/record/finish/fail
+│   ├── sheet_access.py       ← Sheet seam: cached reads, batched writes, gspread + in-memory adapters
 │   ├── characters_reader.py  ← Preset-7 characters sheet (locked roster)
+│   ├── preset.py             ← Active Preset as a value: capabilities, not identity checks
+│   ├── storyboard.py         ← Per-shot storyboard frames (POV/wide detection + edit prompts)
 │   ├── arc_context.py        ← Preset-7 episode_number → arc_number resolver
 │   ├── skill_loader.py       ← Reads skills/*/SKILL.md and concatenates
 │   └── title_card_renderer.py ← PNG+MP3 → MP4 with content-hash cache
@@ -116,6 +121,8 @@ idea-creator/
 | `preset-5` | Kids — Mini Mart Cat | mini-mart-adventure, customer-chaos, shelf-stacking, delivery-day | series (999) | Callum | Cat shopkeeper |
 | `preset-6` | Kids — Croc Academy | science-lesson, math-fun, nature-explore, history-adventure | series (999) | Liam | 3D animated |
 | `preset-7` | **Zenith Chronicles** | origin-story, transformation, galaxy-quest, earth-encounter | series (999, but really 200) | Adam | **Special — see below** |
+| `preset-8` | Cinematic Drone | urban-chase, wildlife-encounter, impossible-vista, human-reaction, landscape-sweep, coastal-flight | standalone | — | `single_shot_native` — one Seedance call, no script/storyboards/stitch |
+| `preset-9` | Modern Shōnen Action | rival-showdown, power-awakening, outnumbered-stand, master-duel, rooftop-chase, sealed-enemy | standalone | Adam | `ending_style: open` — the fight is cut at its peak |
 
 Set `CONTENT_PRESET=preset-N` in `.env`. The active preset drives genre, voice, video style, story mode, sheet routing, skill loading, and YouTube category.
 

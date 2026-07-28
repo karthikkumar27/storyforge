@@ -18,94 +18,135 @@ Usage:
     python scripts/generate_character_images.py --force               # regenerate even if URL exists
     python scripts/generate_character_images.py --yes                 # skip confirmation prompt
     python scripts/generate_character_images.py --dry-run             # plan only, no API calls
+    python scripts/generate_character_images.py --check               # which reference URLs still resolve?
+    python scripts/generate_character_images.py --verify              # regenerate only the dead ones
+
+Every generated image is also mirrored into assets/characters/ — Atlas does
+not retain images indefinitely, and regenerating changes how a character
+looks, which is fatal for a 200-episode series.
 """
 import argparse
-import json
-import os
 import re
 import sys
 import time
 from pathlib import Path
 
 # Make project root importable
-sys.path.insert(0, str(Path(__file__).parent.parent))
+PROJECT_ROOT = Path(__file__).parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
 
 from dotenv import load_dotenv
 load_dotenv()
 
-import gspread
 import httpx
 
-from config import ATLAS_BASE_URL, ATLAS_IMAGE_MODEL, ATLAS_POLL_INTERVAL_SEC, ATLAS_MAX_POLL_ATTEMPTS
+from config import ATLAS_IMAGE_MODEL
+from modules.atlas_client import AtlasClient, AtlasError
+from modules.characters_reader import CharactersReader
+from modules.image_generator import IMAGE_POLL_INTERVAL
 
 
 COST_PER_IMAGE = 0.006  # GPT Image 2 list price
 
+# Atlas does not retain generated images indefinitely — every reference URL in
+# the roster 404'd once already. Keep a local copy of every image we generate so
+# the next expiry costs a re-upload rather than a re-generation (which would
+# change how the character looks mid-series).
+CHARACTER_IMAGE_DIR = PROJECT_ROOT / "assets" / "characters"
 
-# --- Direct Atlas image API call (bypasses AtlasImageGenerator's "no humans" SAFE_PREFIX) ---
-class _AtlasError(Exception):
-    """Carries full server-side detail so we can debug safety vs other failures."""
-    pass
+
+def _slug(text: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9]+", "-", text).strip("-").lower()
+
+
+def mirror_locally(name: str, form: str, url: str) -> Path | None:
+    """Save a copy of a reference image under assets/characters/."""
+    try:
+        resp = httpx.get(url, timeout=60, follow_redirects=True)
+        resp.raise_for_status()
+    except Exception as exc:
+        print(f"      (could not mirror locally: {exc})")
+        return None
+    CHARACTER_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+    ext = ".jpg" if url.lower().split("?")[0].endswith(".jpg") else ".png"
+    dest = CHARACTER_IMAGE_DIR / f"{_slug(name)}_{form}{ext}"
+    dest.write_bytes(resp.content)
+    return dest
+
+
+def reference_is_live(url: str) -> bool:
+    """True when a reference URL still resolves."""
+    if not url:
+        return False
+    try:
+        resp = httpx.head(url, timeout=20, follow_redirects=True)
+        if resp.status_code == 405:            # some hosts reject HEAD
+            resp = httpx.get(url, timeout=30, follow_redirects=True)
+        return resp.status_code == 200
+    except Exception:
+        return False
+
+
+def check_references(records: list[dict]) -> int:
+    """Report which reference images still resolve. Returns the dead count."""
+    dead = 0
+    print(f"\nChecking reference images for {len(records)} characters...\n")
+    for rec in records:
+        name = str(rec.get("character_name", "")).strip()
+        for form in ("normal", "transformed"):
+            url = str(rec.get(f"ref_image_{form}", "")).strip()
+            if not url:
+                continue
+            live = reference_is_live(url)
+            dead += (not live)
+            mark = "live" if live else "DEAD"
+            local = CHARACTER_IMAGE_DIR / f"{_slug(name)}_{form}.png"
+            local_alt = CHARACTER_IMAGE_DIR / f"{_slug(name)}_{form}.jpg"
+            have_local = "  (local copy present)" if (
+                local.exists() or local_alt.exists()
+            ) else ""
+            print(f"  {mark:<4} {name:<32} [{form}]{have_local}")
+    print()
+    if dead:
+        print(f"{dead} reference image(s) no longer resolve.")
+        print("Regenerate them with:  --force        (all)")
+        print("                   or:  --verify      (only the dead ones)")
+    else:
+        print("All reference images resolve.")
+    return dead
+
+# Deliberately talks to Atlas directly rather than through AtlasImageGenerator:
+# that class prepends a "no humans" SAFE_PREFIX on retries, which is wrong for a
+# character roster. The retry ladder here softens the *appearance paragraph*
+# instead — see build_prompt().
+_atlas: AtlasClient | None = None
+
+
+def _client() -> AtlasClient:
+    """Built on first use, not at import — so --dry-run works without an API key."""
+    global _atlas
+    if _atlas is None:
+        _atlas = AtlasClient()
+    return _atlas
 
 
 def call_atlas_image(prompt: str) -> str:
-    """Submit a single image generation, poll for result, return URL.
-    Raises _AtlasError with full message on any failure — no internal retry,
-    so the caller sees every error and decides how to respond.
+    """Submit one image generation and return its URL.
+
+    No internal retry — the caller runs its own ladder of progressively
+    softened prompts and wants to see every failure.
     """
-    headers = {
-        "Authorization": f"Bearer {os.environ['ATLASCLOUD_API_KEY']}",
-        "Content-Type": "application/json",
-    }
-    submit_resp = httpx.post(
-        f"{ATLAS_BASE_URL}/model/generateImage",
-        headers=headers,
-        json={
+    return _client().run(
+        "model/generateImage",
+        {
             "model": ATLAS_IMAGE_MODEL,
             "prompt": prompt,
             "width": 768,
             "height": 1344,
         },
-        timeout=60,
-    )
-    if submit_resp.status_code >= 400:
-        raise _AtlasError(f"submit HTTP {submit_resp.status_code}: {submit_resp.text[:600]}")
-
-    pred_id = submit_resp.json()["data"]["id"]
-
-    for _ in range(ATLAS_MAX_POLL_ATTEMPTS):
-        poll = httpx.get(
-            f"{ATLAS_BASE_URL}/model/prediction/{pred_id}",
-            headers=headers,
-            timeout=30,
-        )
-        if poll.status_code in (429, 500, 502, 503, 504):
-            time.sleep(15)
-            continue
-        if poll.status_code >= 400:
-            raise _AtlasError(f"poll HTTP {poll.status_code}: {poll.text[:600]}")
-        data = poll.json()["data"]
-        status = data["status"]
-        if status == "completed":
-            outputs = data.get("outputs", [])
-            if outputs:
-                return outputs[0]
-            raise _AtlasError(f"completed but no outputs: {data}")
-        if status == "failed":
-            raise _AtlasError(f"task failed: {data.get('error', 'unknown')}")
-        time.sleep(2)
-
-    raise _AtlasError(f"polling timed out after {ATLAS_MAX_POLL_ATTEMPTS * 2}s")
-
-
-def load_characters_sheet():
-    """Returns (sheet, headers, records) for the characters sheet."""
-    creds_dict = json.loads(os.environ["GOOGLE_SHEETS_CREDENTIALS"])
-    sheet_id = os.environ["ALAN_STORY_CHARACTERS_GOOGLE_SHEET_ID"]
-    sheet = gspread.service_account_from_dict(creds_dict).open_by_key(sheet_id).sheet1
-    headers = sheet.row_values(1)
-    records = sheet.get_all_records(numericise_ignore=["all"])
-    return sheet, headers, records
+        poll_interval=IMAGE_POLL_INTERVAL,
+        label="CharacterImage",
+    )[0]
 
 
 _GENDER_SOFTEN = [
@@ -262,16 +303,19 @@ def find_missing(
     form_filter: str | None,
     force: bool,
     skip: list[str] | None = None,
-) -> list[tuple[dict, str, int]]:
-    """Return list of (record, form, row_index) tuples that need an image generated.
+    verify: bool = False,
+) -> list[tuple[dict, str]]:
+    """Return list of (record, form) pairs that need an image generated.
 
     form: "normal" or "transformed"
-    row_index: 1-based sheet row number (so we can write back via update_cell)
     skip: list of character names to exclude (case-insensitive)
+
+    Row positions aren't needed here — CharactersReader.record_ref_image()
+    resolves the row and the form's column when writing back.
     """
     skip_lower = {s.strip().lower() for s in (skip or [])}
     todo = []
-    for i, rec in enumerate(records, start=2):  # row 1 is header
+    for rec in records:
         name = str(rec.get("character_name", "")).strip()
         if not name:
             continue
@@ -290,8 +334,11 @@ def find_missing(
             if not appearance:
                 continue  # nothing to generate from
             if ref_url and not force:
-                continue  # already have one
-            todo.append((rec, form, i))
+                # A URL in the sheet is not proof of an image: Atlas expires
+                # them. --verify checks before deciding it's already done.
+                if not verify or reference_is_live(ref_url):
+                    continue
+            todo.append((rec, form))
     return todo
 
 
@@ -310,12 +357,28 @@ def main():
     ap.add_argument("--force", action="store_true", help="Regenerate even if URL is already set")
     ap.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompt")
     ap.add_argument("--dry-run", action="store_true", help="Plan only — no API calls or sheet writes")
+    ap.add_argument("--check", action="store_true",
+                    help="Report which reference URLs still resolve, then exit. No API calls.")
+    ap.add_argument("--verify", action="store_true",
+                    help="Treat a dead reference URL as missing (regenerates only broken ones)")
     ap.add_argument("--skip", action="append", default=[],
                     help="Skip a specific character (repeatable). Useful when one keeps failing safety filters: --skip 'Edith Hale' --skip 'Marco Reyes'")
     args = ap.parse_args()
 
-    sheet, headers, records = load_characters_sheet()
-    todo = find_missing(records, args.character, args.form, args.force, skip=args.skip)
+    roster = CharactersReader()
+    if not roster.available:
+        raise SystemExit(
+            "ALAN_STORY_CHARACTERS_GOOGLE_SHEET_ID is not set — nothing to read."
+        )
+    records = roster.get_all_characters()
+
+    if args.check:
+        raise SystemExit(1 if check_references(records) else 0)
+
+    todo = find_missing(
+        records, args.character, args.form, args.force,
+        skip=args.skip, verify=args.verify,
+    )
 
     if not todo:
         print("Nothing to generate — all matching characters already have their images.")
@@ -323,7 +386,7 @@ def main():
 
     # Pretty list of what we're about to do
     print(f"\nFound {len(todo)} image(s) to generate:")
-    for rec, form, _ in todo:
+    for rec, form in todo:
         name = rec.get("character_name", "")
         existing = "(replacing existing)" if str(rec.get(f"ref_image_{form}", "")).strip() else ""
         print(f"  • {name} — {form} {existing}")
@@ -345,21 +408,12 @@ def main():
 
     success = 0
     failures = []
-    ref_col_map = {
-        "normal": headers.index("ref_image_normal") + 1 if "ref_image_normal" in headers else None,
-        "transformed": headers.index("ref_image_transformed") + 1 if "ref_image_transformed" in headers else None,
-    }
 
     SCRIPT_MAX_RETRIES = 3
 
-    for rec, form, row_idx in todo:
+    for rec, form in todo:
         name = rec.get("character_name", "")
         appearance = rec.get(f"appearance_{form}", "")
-        col = ref_col_map[form]
-        if col is None:
-            print(f"  ⚠️  '{name}' [{form}] — no ref_image_{form} column in sheet, skipping")
-            failures.append((name, form, "missing column"))
-            continue
 
         url = None
         last_err = None
@@ -371,7 +425,7 @@ def main():
             try:
                 url = call_atlas_image(prompt)
                 break
-            except _AtlasError as exc:
+            except AtlasError as exc:
                 last_err = str(exc)
                 print(f"  retry {retry + 1} failed:\n    {last_err}")
                 time.sleep(3 + retry * 2)
@@ -381,9 +435,18 @@ def main():
             failures.append((name, form, last_err or "unknown"))
             continue
 
-        # Write back to sheet
-        sheet.update_cell(row_idx, col, url)
+        # Write back to sheet immediately — this image is already paid for.
+        try:
+            roster.record_ref_image(name, form, url)
+        except ValueError as exc:
+            print(f"  ⚠️  '{name}' [{form}] generated but not saved: {exc}")
+            print(f"      URL (paste manually): {url}")
+            failures.append((name, form, str(exc)))
+            continue
+        local = mirror_locally(name, form, url)
         print(f"  ✅ {name} [{form}] → {url[:80]}...")
+        if local:
+            print(f"      mirrored to {local.relative_to(PROJECT_ROOT)}")
         success += 1
 
     print(f"\n=== DONE ===")

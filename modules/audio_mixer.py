@@ -9,17 +9,24 @@ from config import ELEVENLABS_BASE_URL, VOICE_MAP, MUSIC_TAGS, PRESET_NAME
 
 
 class AudioMixer:
-    def __init__(self):
-        self.api_key = os.environ.get("ELEVENLABS_API_KEY")
+    def __init__(self, api_key: str | None = None, *, http=httpx, run=subprocess.run):
+        """`http` and `run` are the ElevenLabs transport and the ffmpeg runner.
+
+        Injected so the mixing logic — filter graphs, narration windows, fade
+        timing — can be tested without an API key, a network call or ffmpeg.
+        """
+        self.api_key = api_key or os.environ.get("ELEVENLABS_API_KEY")
         if not self.api_key:
             raise ValueError("ELEVENLABS_API_KEY environment variable is not set")
+        self._http = http
+        self._run = run
 
     def _generate_voiceover(self, narrative: str, genre: str, workdir: str) -> str:
         """Generate voiceover MP3 via ElevenLabs TTS."""
         default_voice = list(VOICE_MAP.values())[0]
         voice_id = VOICE_MAP.get(genre, default_voice)
         print(f"[AudioMixer] Generating voiceover — genre: {genre}, voice: {voice_id}", flush=True)
-        resp = httpx.post(
+        resp = self._http.post(
             f"{ELEVENLABS_BASE_URL}/text-to-speech/{voice_id}",
             headers={"xi-api-key": self.api_key, "Content-Type": "application/json"},
             json={
@@ -46,7 +53,7 @@ class AudioMixer:
 
         try:
             with open(video_path, "rb") as video_file:
-                resp = httpx.post(
+                resp = self._http.post(
                     f"{ELEVENLABS_BASE_URL}/music/video-to-music",
                     headers={"xi-api-key": self.api_key},
                     data={
@@ -111,7 +118,7 @@ class AudioMixer:
                     output_path,
                 ]
 
-            subprocess.run(cmd, check=True, capture_output=True)
+            self._run(cmd, check=True, capture_output=True)
             print("[AudioMixer] Final video mixed successfully", flush=True)
         finally:
             shutil.rmtree(workdir, ignore_errors=True)
@@ -201,17 +208,16 @@ class AudioMixer:
                 output_path,
             ]
 
-            subprocess.run(cmd, check=True, capture_output=True)
+            self._run(cmd, check=True, capture_output=True)
             print("[AudioMixer] Narration + native ambient mix complete", flush=True)
         finally:
             shutil.rmtree(workdir, ignore_errors=True)
 
         return output_path
 
-    @staticmethod
-    def _probe_duration(video_path: str) -> float:
+    def _probe_duration(self, video_path: str) -> float:
         """Return the duration of a video file in seconds via ffprobe."""
-        result = subprocess.run(
+        result = self._run(
             [
                 "ffprobe", "-v", "error",
                 "-show_entries", "format=duration",

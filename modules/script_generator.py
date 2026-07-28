@@ -1,12 +1,13 @@
-import os
-import json
-import anthropic
-from config import CLAUDE_MODEL, SHOTS_COUNT, SHOT_DURATION, VIDEO_STYLE, PRESET_NAME, GENRES, BRIEF_SYSTEM_CONTEXT, ACTIVE_PRESET, DEFAULT_TAGS
+from config import SHOTS_COUNT, SHOT_DURATION, VIDEO_STYLE, PRESET_NAME, GENRES, BRIEF_SYSTEM_CONTEXT, DEFAULT_TAGS
+from modules.llm import Llm
+from modules.preset import active_preset
 from modules.skill_loader import load_skills
+
+_preset = active_preset()
 
 # --- SKILL LOADING -----------------------------------------------------------
 # Common skills apply to ALL presets — universal craft and consistency rules.
-# Preset-specific skills layer on top.
+# The active preset's `extra_skills` layer on top (kids specialist, series canon).
 COMMON_SKILLS = [
     "storytelling-craft",        # logline, want/need/wound/lie, value shifts, theme
     "episode-architecture",      # hook → development → turn → button format rules
@@ -15,14 +16,7 @@ COMMON_SKILLS = [
     "screenplay-director",       # scene blocking, screen direction, action choreography
     "youtube-shorts-optimizer",  # 3-sec hooks, title/description/tag patterns, retention
 ]
-_skills = list(COMMON_SKILLS)
-
-_is_kids = ACTIVE_PRESET in ("preset-4", "preset-5", "preset-6")
-if _is_kids:
-    _skills.append("kids-content-specialist")
-
-if ACTIVE_PRESET == "preset-7":
-    _skills.append("chronicle-of-zenith-canon")
+_skills = COMMON_SKILLS + list(_preset.extra_skills)
 
 SKILLS_CONTENT = load_skills(*_skills)
 
@@ -42,7 +36,7 @@ Your output MUST be valid JSON with exactly this structure:
 {{
   "visual_style": "SHORT art direction prefix (max 25 words). ONLY include: art style ({video_style}), color palette, and lighting mood. Do NOT describe the character here — the reference image handles that.",
   "character_image_prompt": "A detailed prompt for generating a SINGLE reference image of the main character in {video_style} style. This image will be used as the first frame of every video shot. Describe the character with SPECIFIC physical details (species, clothing, build, features, accessories). Show a specific pose in the story's environment. 9:16 vertical composition.",
-  "narrative": "Full voiceover narration. MUST be timed to fit the video — write EXACTLY {word_count_min}-{word_count_max} words (about {total_duration} seconds of speaking). Match the tone to {preset_name}. Every second counts. No filler. The story MUST feel COMPLETE within this video — beginning, middle, and end. No unfinished sentences, no trailing cliffhangers, no 'to be continued' feel. The viewer should feel satisfied at the end.",
+  "narrative": "Full voiceover narration. MUST be timed to fit the video — write EXACTLY {word_count_min}-{word_count_max} words (about {total_duration} seconds of speaking). Match the tone to {preset_name}. Every second counts. No filler. {closure_rule}",
   "title": "Short plain title (3-5 words, max 50 chars)",
   "description": "YouTube description (100-150 words)",
   "tags": ["10-15 YouTube SEO tags: mix broad terms (anime, sci-fi, shorts) + specific terms (character name, story topic) + trending terms (AI generated, anime shorts 2026). No duplicates."],
@@ -90,8 +84,12 @@ Return JSON only. No markdown fences, no explanation."""
 
 
 class ScriptGenerator:
-    def __init__(self):
-        self.client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+    def __init__(self, session=None, llm: Llm | None = None):
+        """`session` is the Run's SheetSession, used to read the character
+        roster. Pass it so the roster is read once per Run; omitting it falls
+        back to a single-use session. `llm` is the Claude seam."""
+        self._llm = llm or Llm()
+        self._session = session
 
     def generate(self, story_brief: str, genre: str, arc_number: int | None = None, episode_number: int | None = None) -> dict:
         total_duration = SHOTS_COUNT * SHOT_DURATION
@@ -108,16 +106,19 @@ class ScriptGenerator:
             total_duration=total_duration,
             video_style=VIDEO_STYLE,
             shot_duration=SHOT_DURATION,
+            closure_rule=_preset.narrative_closure_rule,
         )
 
         # Preset-7: pull the locked appearance paragraphs of every character active
         # in this arc so the LLM can composite supporting characters (e.g. Veth-Ka
         # as a column of pale gold light) into the right shots — not just the main.
         characters_block = ""
-        if ACTIVE_PRESET == "preset-7" and arc_number and episode_number:
+        if _preset.serialized_canon and arc_number and episode_number:
             try:
                 from modules.characters_reader import format_characters_context
-                characters_block = format_characters_context(int(arc_number), int(episode_number))
+                characters_block = format_characters_context(
+                    int(arc_number), int(episode_number), session=self._session
+                )
                 if characters_block:
                     print(f"[ScriptGenerator] Roster injected: arc={arc_number}, ep={episode_number}", flush=True)
             except Exception as exc:
@@ -141,14 +142,9 @@ class ScriptGenerator:
         print(f"[ScriptGenerator] Preset: {PRESET_NAME}, style: {VIDEO_STYLE}, skills loaded: {', '.join(_skills)}", flush=True)
         print(f"[ScriptGenerator] Target: {total_duration}s, {word_count_min}-{word_count_max} words", flush=True)
 
-        message = self.client.messages.create(
-            model=CLAUDE_MODEL,
-            max_tokens=2000,
-            system=full_system,
-            messages=[{"role": "user", "content": prompt}],
+        result = self._llm.ask_json(
+            full_system, prompt, max_tokens=2000, label="ScriptGenerator",
         )
-        raw = message.content[0].text.strip()
-        result = _extract_json(raw)
 
         # Prepend visual_style to every shot for consistent video generation
         style = result.get("visual_style", "")
@@ -168,16 +164,3 @@ class ScriptGenerator:
 
         return result
 
-
-def _extract_json(text: str) -> dict:
-    """Tolerant JSON extraction: handles markdown fences, preambles, trailing text."""
-    import re
-    cleaned = text.strip()
-    fence = re.match(r"^```(?:json)?\s*(.*?)\s*```$", cleaned, re.DOTALL)
-    if fence:
-        cleaned = fence.group(1).strip()
-    start = cleaned.find("{")
-    end = cleaned.rfind("}")
-    if start == -1 or end == -1 or end < start:
-        raise ValueError(f"No JSON object found in model response: {text!r}")
-    return json.loads(cleaned[start : end + 1])

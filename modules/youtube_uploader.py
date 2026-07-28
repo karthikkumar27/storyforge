@@ -11,7 +11,10 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload
 
-from config import YOUTUBE_CATEGORY_ID, YOUTUBE_SCOPES, DEFAULT_HASHTAGS, _preset
+from config import YOUTUBE_CATEGORY_ID, YOUTUBE_SCOPES, DEFAULT_HASHTAGS
+from modules.preset import active_preset
+
+_preset = active_preset()
 
 
 # Per Google's resumable-upload guidance: transient network/HTTP failures
@@ -46,7 +49,7 @@ def _build_description(script_description: str) -> str:
     AFTER. YouTube allows up to 15 hashtags in a description; we prefix with
     `#` if missing and de-duplicate case-insensitively.
     """
-    preset_hashtags = _preset.get("youtube_hashtags") or []
+    preset_hashtags = list(_preset.youtube_hashtags)
     all_hashtags = list(preset_hashtags) + list(DEFAULT_HASHTAGS)
     if not all_hashtags:
         return script_description
@@ -63,9 +66,20 @@ def _build_description(script_description: str) -> str:
 
 
 class YouTubeUploader:
-    def __init__(self):
+    def __init__(self, service=None, *, media_factory=MediaFileUpload):
+        """`service` is an authenticated YouTube Data API client.
+
+        Built from the environment when not supplied — which is also when the
+        OAuth token gets refreshed, so constructing this is a real side effect.
+        The orchestrator therefore builds it late, just before uploading.
+        """
+        self.youtube = service or self._authenticate()
+        self._media_factory = media_factory
+
+    @staticmethod
+    def _authenticate():
         token_data = json.loads(os.environ["YOUTUBE_OAUTH_TOKEN"])
-        self.creds = Credentials(
+        creds = Credentials(
             token=token_data.get("token"),
             refresh_token=token_data["refresh_token"],
             token_uri="https://oauth2.googleapis.com/token",
@@ -73,9 +87,9 @@ class YouTubeUploader:
             client_secret=os.environ["YOUTUBE_CLIENT_SECRET"],
             scopes=YOUTUBE_SCOPES,
         )
-        if not self.creds.valid:
-            self.creds.refresh(Request())
-        self.youtube = build("youtube", "v3", credentials=self.creds)
+        if not creds.valid:
+            creds.refresh(Request())
+        return build("youtube", "v3", credentials=creds)
 
     def upload(self, video_path: str, script_result: dict) -> str:
         # COPPA: every upload must declare audience. Kids presets (4/5/6) opt
@@ -83,7 +97,7 @@ class YouTubeUploader:
         # defaults to False. Setting this explicitly (rather than omitting it)
         # avoids the "pending audience declaration" Studio state that blocks
         # end screens, cards, and other engagement features.
-        made_for_kids = bool(_preset.get("made_for_kids", False))
+        made_for_kids = _preset.made_for_kids
         audience_label = "MADE FOR KIDS" if made_for_kids else "Not made for kids"
         print(f"[YT] Audience declaration: {audience_label}", flush=True)
 
@@ -99,7 +113,7 @@ class YouTubeUploader:
                 "selfDeclaredMadeForKids": made_for_kids,
             },
         }
-        media = MediaFileUpload(video_path, mimetype="video/mp4", resumable=True)
+        media = self._media_factory(video_path, mimetype="video/mp4", resumable=True)
         request = self.youtube.videos().insert(
             part="snippet,status", body=body, media_body=media
         )
