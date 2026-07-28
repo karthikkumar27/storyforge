@@ -4,7 +4,8 @@ from datetime import datetime
 from pathlib import Path
 
 from config import STORY_MODE, VIDEO_PROVIDER, ACTIVE_PRESET, GENRES, VIDEO_STYLE, DEFAULT_TAGS, _preset
-from modules.gsheet_reader import GSheetReader, get_episode_reader
+from modules.episode_ledger import get_episode_ledger
+from modules.sheet_access import SheetSession
 from modules.brief_generator import BriefGenerator
 from modules.script_generator import ScriptGenerator
 from modules.image_generator import create_image_generator
@@ -64,33 +65,31 @@ def _run_single_shot_native() -> dict:
     download MP4 → archive → upload. No script gen, no per-shot storyboards,
     no stitching, no audio mixing.
     """
-    reader = get_episode_reader()
-    row = reader.get_pending_row()
+    ledger = get_episode_ledger(SheetSession())
+    claim = ledger.claim_next()
 
-    if not row:
-        past_stories = reader.get_past_stories(limit=20)
-        print(f"[Drone] {len(past_stories)} past prompts loaded for anti-repetition", flush=True)
-        brief_data = BriefGenerator().generate(past_stories=past_stories)
-        reader.append_pending_row(brief_data)
-        row = reader.get_pending_row()
+    if claim.needs_brief:
+        brief_data = BriefGenerator().generate(**claim.brief_context.as_kwargs())
+        claim = ledger.start(brief_data)
 
-    if not row:
+    if claim.episode is None:
         return {"status": "no_pending_rows"}
 
-    row_index = row["row_index"]
+    episode = claim.episode
+    row_index = episode.row_index
     try:
-        reader.update_status(row_index, "generating")
+        ledger.record(row_index, status="generating")
 
         seedance2_cfg = _preset.get("seedance2") or {}
         mode = seedance2_cfg.get("mode", "t2v")
-        prompt = row["story_brief"]
+        prompt = episode.story_brief
         print(f"[Drone] Mode={mode}  brief ({len(prompt)} chars): {prompt[:200]}...", flush=True)
 
         if mode == "i2v-loop":
             # Ambient loop mode — generate a still anchor, pass it as BOTH the
             # first and last frame to Seedance i2v. Kept for future ambient
             # presets; not currently used by preset-8.
-            ref_image_url = (row.get("ref_image_url") or "").strip()
+            ref_image_url = (episode.ref_image_url or "").strip()
             if ref_image_url:
                 print(f"[Drone] Reusing ref image from sheet: {ref_image_url[:80]}...", flush=True)
             else:
@@ -98,7 +97,7 @@ def _run_single_shot_native() -> dict:
                 image_model = _preset.get("image_model")
                 print(f"[Drone] Generating loop-anchor still ({image_model or 'default'})...", flush=True)
                 ref_image_url = AtlasImageGenerator().generate(prompt, model=image_model)
-                reader.update_ref_image(row_index, ref_image_url)
+                ledger.record(row_index, ref_image_url=ref_image_url)
                 print(f"[Drone] Still generated: {ref_image_url[:80]}...", flush=True)
             video_path = AtlasSeedance2I2VLoopProducer().produce(
                 image_url=ref_image_url,
@@ -121,7 +120,7 @@ def _run_single_shot_native() -> dict:
 
         # Title for YouTube — prefer the title field if the brief had a
         # title_hint, otherwise fall back to a generic timestamped title.
-        title = (row.get("title") or "").strip() or "Endless Drone — Cinematic Aerial"
+        title = (episode.title or "").strip() or "Endless Drone — Cinematic Aerial"
 
         # Reuse the orchestrator's archive helper so the MP4 lands in
         # videos/<date>_<slug>.mp4 with the same naming convention.
@@ -129,7 +128,7 @@ def _run_single_shot_native() -> dict:
         if archive_path:
             print(f"[Drone] Archived to {archive_path}", flush=True)
 
-        reader.update_status(row_index, "uploading")
+        ledger.record(row_index, status="uploading")
         # YouTubeUploader expects a script_result-like dict with title +
         # description + tags. Build a minimal one from the brief.
         script_result = {
@@ -144,12 +143,12 @@ def _run_single_shot_native() -> dict:
             "narrative": "",              # unused for this preset
         }
         youtube_url = YouTubeUploader().upload(archive_path or video_path, script_result)
-        reader.update_done(row_index, youtube_url)
+        ledger.finish(row_index, youtube_url)
         return {"status": "done", "youtube_url": youtube_url}
 
     except Exception as exc:
         try:
-            reader.update_error(row_index, str(exc))
+            ledger.fail(row_index, str(exc))
         except Exception:
             pass
         raise
@@ -164,54 +163,37 @@ def run_pipeline() -> dict:
     if _preset.get("pipeline_mode") == "single_shot_native":
         return _run_single_shot_native()
 
-    # Routes to ALAN_STORY sheet for preset-7, main GOOGLE_SHEET for everything else
-    reader = get_episode_reader()
-    row = reader.get_pending_row()
+    # One SheetSession per Run — reads are cached for its lifetime and discarded
+    # afterwards, so material edited between Runs is picked up.
+    # See docs/adr/0001-run-scoped-ledger-cache.md.
+    ledger = get_episode_ledger(SheetSession())
 
-    if not row:
-        previous_parts = []
-        past_stories = reader.get_past_stories(limit=20)
-        print(f"[Pipeline] {len(past_stories)} past stories loaded for anti-repetition", flush=True)
+    # Routes to ALAN_STORY sheet for preset-7, main GOOGLE_SHEET for everything
+    # else. Resolves the anti-repetition history, the Series so far, and the next
+    # Episode Number in one read.
+    claim = ledger.claim_next()
 
-        if STORY_MODE == "series":
-            series_id = reader.get_latest_incomplete_series()
-            if series_id:
-                previous_parts = reader.get_series_parts(series_id)
-                print(f"[Pipeline] Continuing series {series_id}, part {len(previous_parts) + 1}", flush=True)
-            else:
-                print("[Pipeline] Starting new series", flush=True)
+    if claim.needs_brief:
+        brief_data = BriefGenerator().generate(**claim.brief_context.as_kwargs())
+        claim = ledger.start(brief_data)
 
-        # For preset-7 (200-episode continuous series), compute the next absolute
-        # episode number across the entire series so brief_generator can resolve
-        # the matching arc context.
-        episode_number = None
-        if ACTIVE_PRESET == "preset-7":
-            episode_number = reader.get_next_episode_number(GENRES)
-            print(f"[Pipeline] Preset-7 — generating episode #{episode_number}", flush=True)
-
-        brief_data = BriefGenerator().generate(
-            previous_parts=previous_parts,
-            past_stories=past_stories,
-            episode_number=episode_number,
-        )
-        reader.append_pending_row(brief_data)
-        row = reader.get_pending_row()
-
-    if not row:
+    if claim.episode is None:
         return {"status": "no_pending_rows"}
 
-    row_index = row["row_index"]
+    episode = claim.episode
+    row_index = episode.row_index
 
     try:
-        reader.update_status(row_index, "generating")
+        ledger.record(row_index, status="generating")
 
         script_result = ScriptGenerator().generate(
-            row["story_brief"],
-            row["genre"],
-            arc_number=row.get("arc_number"),
-            episode_number=row.get("episode_number"),
+            episode.story_brief,
+            episode.genre,
+            arc_number=episode.arc_number,
+            episode_number=episode.episode_number,
         )
-        reader.update_script(row_index, script_result["narrative"])
+        # Buffered — rides along with the next status transition.
+        ledger.record(row_index, script=script_result["narrative"])
 
         ref_image_url = None
 
@@ -221,7 +203,7 @@ def run_pipeline() -> dict:
         if ACTIVE_PRESET == "preset-7":
             from modules.characters_reader import CharactersReader
             chars = CharactersReader()
-            form = str(row.get("character_form", "")).strip().lower() or "normal"
+            form = str(episode.character_form).strip().lower() or "normal"
             ref_image_url = chars.get_main_ref_image_for_form(form)
             if ref_image_url:
                 print(f"[Pipeline] Preset-7 character_form={form} → locked ref image from characters sheet", flush=True)
@@ -230,9 +212,9 @@ def run_pipeline() -> dict:
 
         # Reuse reference image from Part 1 if this is a series continuation (other presets)
         if not ref_image_url and STORY_MODE == "series":
-            series_id = reader.get_latest_incomplete_series()
+            series_id = ledger.latest_incomplete_series()
             if series_id:
-                parts = reader.get_series_parts(series_id)
+                parts = ledger.series_parts(series_id)
                 for part in parts:
                     url = part.get("ref_image_url", "")
                     if url:
@@ -252,9 +234,9 @@ def run_pipeline() -> dict:
                 ref_image_url = create_image_generator().generate(char_prompt)
                 print("[Pipeline] New reference image generated", flush=True)
 
-        # Save reference image URL to sheet for future parts
+        # Save reference image URL to sheet for future parts (buffered)
         if ref_image_url:
-            reader.update_ref_image(row_index, ref_image_url)
+            ledger.record(row_index, ref_image_url=ref_image_url)
 
         # Premium: per-shot storyboard generation. Opt-in per preset via
         # `per_shot_storyboards: True` in config. For each shot, GPT Image 2
@@ -338,7 +320,7 @@ def run_pipeline() -> dict:
             final_path = AudioMixer().mix_with_native_audio(
                 video_path,
                 script_result["narrative"],
-                row["genre"],
+                episode.genre,
                 narration_volume=audio_mix_cfg.get("narration_volume", 1.0),
                 ambient_volume=audio_mix_cfg.get("ambient_volume", 0.32),
                 narration_start_offset=audio_mix_cfg.get("narration_start_offset", title_duration),
@@ -348,24 +330,24 @@ def run_pipeline() -> dict:
             final_path = video_path
             print("[Pipeline] Using Seedance native audio, skipping ElevenLabs", flush=True)
         else:
-            final_path = AudioMixer().mix(video_path, script_result["narrative"], row["genre"])
+            final_path = AudioMixer().mix(video_path, script_result["narrative"], episode.genre)
 
         # Format YouTube title.
         # Preset-7 (Zenith): "The Chronicle of Zenith — Ep {N}: {Episode Title}"
         # Other series presets: "Series Title: Episode Title - Part N"
-        if ACTIVE_PRESET == "preset-7" and row.get("episode_number"):
-            ep_n = row["episode_number"]
+        if ACTIVE_PRESET == "preset-7" and episode.episode_number:
+            ep_n = episode.episode_number
             episode_title = script_result["title"]
             script_result["title"] = f"The Chronicle of Zenith — Ep {ep_n}: {episode_title}"
             print(f"[Pipeline] YouTube title: {script_result['title']}", flush=True)
-        elif row.get("story_mode") == "series" and row.get("part_number"):
-            part_num = row["part_number"]
+        elif episode.story_mode == "series" and episode.part_number:
+            part_num = episode.part_number
             episode_title = script_result["title"]
             # Get series title from Part 1
-            series_id = row.get("series_id", "")
+            series_id = episode.series_id
             series_title = episode_title  # fallback
             if series_id:
-                parts = reader.get_series_parts(series_id)
+                parts = ledger.series_parts(series_id)
                 if parts:
                     series_title = parts[0].get("title", episode_title)
             if str(part_num) == "1":
@@ -381,15 +363,16 @@ def run_pipeline() -> dict:
         if archive_path:
             print(f"[Pipeline] Archived to {archive_path}", flush=True)
 
-        reader.update_status(row_index, "uploading")
+        # Flushes the buffered script + ref image along with the status change.
+        ledger.record(row_index, status="uploading")
         youtube_url = YouTubeUploader().upload(final_path, script_result)
 
-        reader.update_done(row_index, youtube_url)
+        ledger.finish(row_index, youtube_url)
         return {"status": "done", "youtube_url": youtube_url}
 
     except Exception as exc:
         try:
-            reader.update_error(row_index, str(exc))
+            ledger.fail(row_index, str(exc))
         except Exception:
             pass
         raise

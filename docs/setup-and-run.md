@@ -8,7 +8,7 @@ End-to-end guide for configuring environment variables and running the pipeline 
 
 `idea-creator` is a hands-off story-video generator:
 
-1. **Read** a pending story brief from a Google Sheet (`modules/gsheet_reader.py`)
+1. **Read** a pending story brief from a Google Sheet (`modules/episode_ledger.py`)
 2. **Generate** a script from the brief via Claude (`modules/brief_generator.py`, `modules/script_generator.py`)
 3. **Produce** video shots via Kling AI (`modules/video_producer.py`)
 4. **Mix** audio/TTS via ElevenLabs + royalty-free music (`modules/audio_mixer.py`)
@@ -27,8 +27,8 @@ All secrets are read from `os.environ` at module init. Locally, `main.py:6` call
 | Variable | Required? | Read in | Purpose |
 |---|---|---|---|
 | `ANTHROPIC_API_KEY` | Yes | `brief_generator.py`, `script_generator.py`, `discovery.py` | Claude API auth |
-| `GOOGLE_SHEET_ID` | Yes | `gsheet_reader.py` | Target spreadsheet ID |
-| `GOOGLE_SHEETS_CREDENTIALS` | Yes | `gsheet_reader.py` | Service account JSON (full blob, single line) |
+| `GOOGLE_SHEET_ID` | Yes | `sheet_access.py` | Target spreadsheet ID |
+| `GOOGLE_SHEETS_CREDENTIALS` | Yes | `sheet_access.py` | Service account JSON (full blob, single line) |
 | `KLING_ACCESS_KEY_ID` | Yes | `video_producer.py` | Kling video API key |
 | `KLING_SECRET_KEY` | Yes | `video_producer.py` | Kling video API secret |
 | `YOUTUBE_CLIENT_ID` | Yes | `youtube_uploader.py` | OAuth client ID |
@@ -223,13 +223,14 @@ If the full `/run` fails, test modules in isolation before burning Kling/ElevenL
 
 ```bash
 python -i
->>> from modules.gsheet_reader import GSheetReader
->>> rows = GSheetReader().fetch_pending()
+>>> from modules.episode_ledger import get_episode_ledger
+>>> claim = get_episode_ledger().claim_next()
+>>> claim.episode or claim.brief_context
 >>> # ... and so on for brief_generator, script_generator, etc.
 ```
 
 Suggested test order (cheap → expensive):
-1. `gsheet_reader` (free, catches sheet sharing issues)
+1. `episode_ledger` (free, catches sheet sharing issues)
 2. `brief_generator` + `script_generator` (Claude tokens, cheap)
 3. `video_producer` (Kling, $$)
 4. `audio_mixer` (ElevenLabs, $)

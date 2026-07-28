@@ -67,7 +67,8 @@ idea-creator/
 │   ├── video_producer.py     ← Seedance/Kling/Atlas video producers (factory)
 │   ├── audio_mixer.py        ← ElevenLabs TTS + BGM mixing (used when not atlas)
 │   ├── youtube_uploader.py   ← OAuth2 + chunked upload
-│   ├── gsheet_reader.py      ← Sheet I/O + preset-aware sheet routing
+│   ├── episode_ledger.py     ← Episode Ledger — claim_next/start/record/finish/fail
+│   ├── sheet_access.py       ← Sheet seam: cached reads, batched writes, gspread + in-memory adapters
 │   ├── characters_reader.py  ← Preset-7 characters sheet (locked roster)
 │   ├── arc_context.py        ← Preset-7 episode_number → arc_number resolver
 │   ├── skill_loader.py       ← Reads skills/*/SKILL.md and concatenates

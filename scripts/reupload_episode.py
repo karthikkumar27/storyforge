@@ -24,7 +24,8 @@ from dotenv import load_dotenv
 load_dotenv(override=True)
 
 from config import ACTIVE_PRESET
-from modules.gsheet_reader import get_episode_reader
+from modules.episode_ledger import get_episode_ledger
+from modules.sheet_access import SheetSession
 from modules.script_generator import ScriptGenerator
 from modules.youtube_uploader import YouTubeUploader
 
@@ -40,11 +41,11 @@ def main():
     if not video_path.exists():
         raise SystemExit(f"Video not found: {video_path}")
 
-    reader = get_episode_reader()
-    records = reader.sheet.get_all_records()
-    if args.row < 2 or args.row - 2 >= len(records):
-        raise SystemExit(f"Row {args.row} out of range (sheet has {len(records) + 1} rows)")
-    row = records[args.row - 2]
+    ledger = get_episode_ledger(SheetSession())
+    try:
+        row = ledger.row(args.row)
+    except IndexError as exc:
+        raise SystemExit(str(exc))
     row_index = args.row
 
     status = str(row.get("status", "")).strip().lower()
@@ -93,7 +94,7 @@ def main():
         series_id = str(row.get("series_id", "")).strip()
         series_title = episode_title  # fallback for Part 1
         if series_id:
-            parts = reader.get_series_parts(series_id)
+            parts = ledger.series_parts(series_id)
             if parts:
                 series_title = parts[0].get("title", episode_title)
         if str(part_num) == "1":
@@ -103,16 +104,16 @@ def main():
         print(f"      → final YT title: {script_result['title']}")
 
     print("\n[2/3] Uploading to YouTube...")
-    reader.update_status(row_index, "uploading")
+    ledger.record(row_index, status="uploading")
     try:
         url = YouTubeUploader().upload(str(video_path), script_result)
     except Exception as exc:
-        reader.update_error(row_index, str(exc))
+        ledger.fail(row_index, str(exc))
         raise SystemExit(f"Upload failed: {exc}")
     print(f"      → {url}")
 
     print("\n[3/3] Updating sheet to done...")
-    reader.update_done(row_index, url)
+    ledger.finish(row_index, url)
 
     print(f"\n=== DONE ===\n  YouTube: {url}")
 

@@ -7,54 +7,35 @@ import json
 from dotenv import load_dotenv
 load_dotenv()
 
-from config import STORY_MODE, PRESET_NAME, ACTIVE_PRESET, GENRES
-from modules.gsheet_reader import get_episode_reader
+from config import PRESET_NAME
+from modules.episode_ledger import get_episode_ledger
+from modules.sheet_access import SheetSession
 from modules.brief_generator import BriefGenerator
 from modules.script_generator import ScriptGenerator
 
 
 def main():
-    reader = get_episode_reader()
-    row = reader.get_pending_row()
+    # Same claim flow as the full pipeline, which is what makes this a genuine
+    # rehearsal of it: anything that breaks claim_next() breaks here first, for
+    # the price of a Claude call instead of a full episode.
+    ledger = get_episode_ledger(SheetSession())
+    claim = ledger.claim_next()
 
-    if not row:
-        previous_parts = []
-        past_stories = reader.get_past_stories(limit=20)
-        print(f"[ScriptOnly] {len(past_stories)} past stories loaded for anti-repetition", flush=True)
+    if claim.needs_brief:
+        brief_data = BriefGenerator().generate(**claim.brief_context.as_kwargs())
+        claim = ledger.start(brief_data)
 
-        if STORY_MODE == "series":
-            series_id = reader.get_latest_incomplete_series()
-            if series_id:
-                previous_parts = reader.get_series_parts(series_id)
-                print(f"[ScriptOnly] Continuing series {series_id}, part {len(previous_parts) + 1}", flush=True)
-            else:
-                print("[ScriptOnly] Starting new series", flush=True)
-
-        # Preset-7 — compute next episode number across the continuous 200-ep series
-        episode_number = None
-        if ACTIVE_PRESET == "preset-7":
-            episode_number = reader.get_next_episode_number(GENRES)
-            print(f"[ScriptOnly] Preset-7 — generating episode #{episode_number}", flush=True)
-
-        brief_data = BriefGenerator().generate(
-            previous_parts=previous_parts,
-            past_stories=past_stories,
-            episode_number=episode_number,
-        )
-        reader.append_pending_row(brief_data)
-        row = reader.get_pending_row()
-
-    if not row:
+    if claim.episode is None:
         print("[ScriptOnly] No pending rows found")
         return
 
+    episode = claim.episode
     print(f"\n[ScriptOnly] Preset: {PRESET_NAME}", flush=True)
-    print(f"[ScriptOnly] Story: {row['story_brief']}", flush=True)
-    print(f"[ScriptOnly] Genre: {row['genre']}", flush=True)
+    print(f"[ScriptOnly] Story: {episode.story_brief}", flush=True)
+    print(f"[ScriptOnly] Genre: {episode.genre}", flush=True)
 
-    script = ScriptGenerator().generate(row["story_brief"], row["genre"])
-    reader.update_script(row["row_index"], script["narrative"])
-    reader.update_status(row["row_index"], "script_ready")
+    script = ScriptGenerator().generate(episode.story_brief, episode.genre)
+    ledger.record(episode.row_index, script=script["narrative"], status="script_ready")
 
     print(f"\n{'='*50}")
     print(f"Title:    {script['title']}")
