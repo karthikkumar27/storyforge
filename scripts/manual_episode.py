@@ -25,6 +25,11 @@ Usage:
     python scripts/manual_episode.py --row 5        # process specific row by number
     python scripts/manual_episode.py --dry-run      # plan only, no API calls
     python scripts/manual_episode.py --no-storyboards  # use single ref image for all shots
+    python scripts/manual_episode.py --chain        # each storyboard also sees the previous shot's last frame
+
+--chain is independent of the active preset's `chain_reference_frames`
+capability: this script deliberately bypasses the orchestrator so the same
+sheet row can be run both ways and compared.
 """
 import argparse
 import shutil
@@ -134,7 +139,10 @@ def main():
 
     # Cost preview
     n_shots = len(inline_shots) if inline_shots else SHOTS_COUNT
-    storyboard_cost = 0.0 if args.no_storyboards else n_shots * 0.006
+    # --chain wins over --no-storyboards (see step 3 below), so storyboards are
+    # only actually free when neither asks for them.
+    skip_storyboards = args.no_storyboards and not args.chain
+    storyboard_cost = 0.0 if skip_storyboards else n_shots * 0.006
     image_gen_cost = 0.0 if ref_image_url else 0.006
     seedance_cost_per_clip = 0.144 if SHOT_DURATION == 8 else 0.18
     video_cost = n_shots * seedance_cost_per_clip
@@ -146,7 +154,7 @@ def main():
         print(f"  Script generation:           ${script_cost:.3f}")
     if not ref_image_url:
         print(f"  Reference image:             ${image_gen_cost:.3f}")
-    if not args.no_storyboards:
+    if not skip_storyboards:
         print(f"  Per-shot storyboards ({n_shots}):    ${storyboard_cost:.3f}")
     print(f"  Video clips ({n_shots} × {SHOT_DURATION}s):       ${video_cost:.3f}")
     print(f"  ─────────────────────────────")
