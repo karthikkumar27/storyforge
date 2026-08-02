@@ -1,0 +1,132 @@
+"""Chained reference frames.
+
+A Storyboard fixes who and where a character is at the START of a shot. What it
+cannot see is what the PREVIOUS shot actually rendered -- so shot 4 is free to
+re-decide the character's eye colour within the reference image's tolerance,
+which is exactly how one episode ends up with two different leads.
+
+This module carries a still forward: the last clean frame of shot N-1 becomes a
+second base image for shot N's Storyboard, alongside the locked Reference Image.
+
+Deliberately NOT the last frame: a Seedance clip drifts furthest from the
+reference at its end, and the true final frame is often mid-motion-blur or part
+of a fade. Sampling slightly earlier gets a settled, on-model frame.
+
+Nothing here is hosted. Atlas accepts base64 data URIs on both the image-edit
+and video endpoints, so a frame goes local file -> data URI -> API without ever
+touching cloud storage.
+"""
+
+from __future__ import annotations
+
+import base64
+import os
+import subprocess
+import tempfile
+from typing import Any
+
+import httpx
+
+# How far before the end to sample. Far enough to clear motion blur and fades,
+# close enough that it is still the shot's ending state.
+FRAME_OFFSET_SEC = 0.4
+
+# Longest edge of the encoded frame. 768px keeps the base64 payload near 300KB,
+# a size proven to work against the Atlas edit endpoint.
+MAX_EDGE_PX = 768
+
+
+class FrameExtractionError(RuntimeError):
+    """The clip could not yield a usable still."""
+
+
+def _probe_size(path: str) -> tuple[int, int]:
+    """Return (width, height) of the first video stream in path."""
+    result = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0",
+         "-show_entries", "stream=width,height", "-of", "csv=s=x:p=0", str(path)],
+        check=True, capture_output=True, text=True,
+    )
+    width, height = result.stdout.strip().split("\n")[0].split("x")[:2]
+    return int(width), int(height)
+
+
+def _even(value: int) -> int:
+    """Round down to an even number -- yuv420p requires even dimensions."""
+    return max(2, value - (value % 2))
+
+
+def extract_last_frame(
+    clip_path: str,
+    *,
+    offset_sec: float = FRAME_OFFSET_SEC,
+    dest_dir: str | None = None,
+) -> str:
+    """Write the clip's last clean frame as a PNG and return its path.
+
+    Raises FrameExtractionError rather than returning a partial result, so the
+    caller can fall back to a single-base Storyboard for this one shot.
+    """
+    dest_dir = dest_dir or tempfile.mkdtemp(prefix="frame_chain_")
+    os.makedirs(dest_dir, exist_ok=True)
+    stem = os.path.splitext(os.path.basename(clip_path))[0]
+    dest = os.path.join(dest_dir, f"{stem}_last.png")
+
+    result = subprocess.run(
+        ["ffmpeg", "-y", "-v", "error",
+         "-sseof", f"-{offset_sec}",
+         "-i", str(clip_path),
+         "-frames:v", "1", "-update", "1", dest],
+        capture_output=True,
+    )
+    if result.returncode != 0 or not os.path.exists(dest) or os.path.getsize(dest) == 0:
+        stderr = result.stderr.decode(errors="replace")[-300:] if result.stderr else ""
+        raise FrameExtractionError(
+            f"could not extract a frame from {clip_path}: {stderr}"
+        )
+    return dest
+
+
+def to_data_uri(image_path: str, *, max_edge: int = MAX_EDGE_PX) -> str:
+    """Return the image as a base64 data URI, downscaling only if oversized."""
+    width, height = _probe_size(image_path)
+    source = image_path
+
+    longest = max(width, height)
+    if longest > max_edge:
+        # The longest edge lands on max_edge exactly; the other scales to match.
+        if width >= height:
+            target_w = _even(max_edge)
+            target_h = _even(round(height * max_edge / longest))
+        else:
+            target_h = _even(max_edge)
+            target_w = _even(round(width * max_edge / longest))
+        source = os.path.join(
+            os.path.dirname(image_path), f"scaled_{os.path.basename(image_path)}"
+        )
+        subprocess.run(
+            ["ffmpeg", "-y", "-v", "error", "-i", str(image_path),
+             "-vf", f"scale={target_w}:{target_h}", source],
+            check=True, capture_output=True,
+        )
+
+    with open(source, "rb") as handle:
+        encoded = base64.b64encode(handle.read()).decode()
+    return f"data:image/png;base64,{encoded}"
+
+
+def fetch_image(url: str, dest_dir: str | None = None, *, http: Any = httpx) -> str:
+    """Download an image URL to a local file and return its path.
+
+    Storyboards come back from Atlas as hosted URLs, but their aspect ratio has
+    to be checked and corrected locally, which means having the bytes.
+    """
+    dest_dir = dest_dir or tempfile.mkdtemp(prefix="frame_chain_")
+    os.makedirs(dest_dir, exist_ok=True)
+    dest = os.path.join(dest_dir, "storyboard.png")
+    with http.stream("GET", url, timeout=120) as resp:
+        resp.raise_for_status()
+        with open(dest, "wb") as handle:
+            for chunk in resp.iter_bytes(chunk_size=65536):
+                handle.write(chunk)
+    return dest
