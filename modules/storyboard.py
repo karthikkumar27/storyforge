@@ -30,7 +30,6 @@ from __future__ import annotations
 from typing import Callable, Protocol
 
 from modules.frame_chain import (
-    FrameExtractionError,
     extract_last_frame,
     portrait_anchor,
     to_data_uri,

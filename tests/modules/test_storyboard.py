@@ -3,6 +3,8 @@ import pytest
 
 from modules.storyboard import (
     CHARACTER_ABSENT_MARKERS,
+    ChainedStoryboards,
+    build_continuity_prompt,
     build_edit_prompt,
     build_storyboards,
     character_is_absent,
@@ -185,9 +187,6 @@ def test_progress_is_reported_per_shot():
     assert any("shot 2/2" in line for line in lines)
 
 
-from modules.storyboard import ChainedStoryboards, build_continuity_prompt
-
-
 class ListEditor:
     """StubEditor's sibling: accepts a list-or-string base, records both."""
 
@@ -203,6 +202,25 @@ class ListEditor:
                 raise result
             return result
         return f"https://cdn/chained{len(self.calls)}.png"
+
+
+@pytest.fixture(autouse=True)
+def no_aspect_fetch(monkeypatch):
+    """frame_for always runs its return value through portrait_anchor, which
+    -- unpatched -- fetches the URL over real HTTP to measure it. Most tests
+    below don't care about aspect correction, so default it to identity and
+    keep this whole module network-free. `portrait_anchor` is only ever
+    reached by ChainedStoryboards.frame_for, so this has no effect on the
+    build_storyboards tests above.
+
+    test_the_result_is_aspect_checked_before_it_is_returned re-patches the
+    same target with its own monkeypatch call, which simply wins -- so it
+    still exercises the real call path this fixture stands in for.
+    """
+    monkeypatch.setattr(
+        "modules.storyboard.portrait_anchor",
+        lambda url, **kw: url,
+    )
 
 
 # -- the continuity prompt ----------------------------------------------------
@@ -277,6 +295,7 @@ def test_extraction_failure_falls_back_to_the_reference_alone(monkeypatch, tmp_p
     result = supplier.frame_for(1, "Kenji lunges", str(clip))
 
     assert editor.calls[0][0] == "https://cdn/ref.png"
+    assert "two images" not in editor.calls[0][1]
     assert result is not None
 
 
