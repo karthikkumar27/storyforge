@@ -302,6 +302,93 @@ def test_without_a_supplier_behaviour_is_unchanged():
     ]
 
 
+def test_the_supplier_outranks_batch_storyboards_and_none_falls_to_them():
+    producer = RecordingProducer()
+    _run(producer, shots=["one", "two"],
+         reference_image_url="https://cdn/ref.png",
+         storyboard_urls=["https://cdn/sb0.png", "https://cdn/sb1.png"],
+         storyboard_supplier=StubSupplier(["https://cdn/a.png", None]))
+    assert [r for _, r in producer.submitted] == ["https://cdn/a.png", "https://cdn/sb1.png"]
+
+
+# -- a rejected inline anchor must not cost the episode -----------------------
+#
+# Chaining is the first thing in this pipeline to put an inline `data:` payload
+# in `body["image"]`; before it, that field was always a hosted URL. Atlas is
+# documented (spec §2) as intermittently rejecting bodies it accepts minutes
+# later with misleading schema errors. A rejection on shot 3 would otherwise
+# kill an episode with shots 1-2 already paid for.
+
+class RejectsInlineAnchors(RecordingProducer):
+    def _submit_shot(self, prompt, reference_image_url=None):
+        self.submitted.append((prompt, reference_image_url))
+        if reference_image_url and reference_image_url.startswith("data:"):
+            raise RuntimeError("request body field <image> is required")
+        return f"task_{len(self.submitted)}"
+
+
+def test_a_rejected_inline_anchor_retries_with_the_shared_reference():
+    producer = RejectsInlineAnchors()
+    supplier = StubSupplier(["data:image/png;base64,AAAA", "https://cdn/b.png"])
+
+    _run(
+        producer, shots=["one", "two"],
+        reference_image_url="https://cdn/ref.png",
+        storyboard_supplier=supplier,
+    )
+
+    assert [r for _, r in producer.submitted] == [
+        "data:image/png;base64,AAAA",   # rejected
+        "https://cdn/ref.png",          # retried with the shared reference
+        "https://cdn/b.png",            # shot 2 unaffected — the episode ran on
+    ]
+
+
+def test_a_rejected_inline_anchor_retries_bare_when_there_is_no_shared_reference():
+    producer = RejectsInlineAnchors()
+
+    _run(
+        producer, shots=["one"],
+        storyboard_supplier=StubSupplier(["data:image/png;base64,AAAA"]),
+    )
+
+    assert producer.submitted[-1][1] is None   # text-to-video rather than nothing
+
+
+def test_a_submit_failure_on_a_hosted_anchor_still_propagates():
+    """Only the inline-payload case gets a retry. A hosted URL failing means
+    something is genuinely wrong, and swallowing it would mask it."""
+    class Exploding(RecordingProducer):
+        def _submit_shot(self, prompt, reference_image_url=None):
+            self.submitted.append((prompt, reference_image_url))
+            raise RuntimeError("atlas down")
+
+    producer = Exploding()
+
+    with pytest.raises(RuntimeError, match="atlas down"):
+        _run(producer, shots=["one"], reference_image_url="https://cdn/ref.png")
+
+    assert len(producer.submitted) == 1   # no retry
+
+
+def test_a_retry_that_also_fails_propagates():
+    class AlwaysFails(RecordingProducer):
+        def _submit_shot(self, prompt, reference_image_url=None):
+            self.submitted.append((prompt, reference_image_url))
+            raise RuntimeError("atlas down")
+
+    producer = AlwaysFails()
+
+    with pytest.raises(RuntimeError, match="atlas down"):
+        _run(
+            producer, shots=["one"],
+            reference_image_url="https://cdn/ref.png",
+            storyboard_supplier=StubSupplier(["data:image/png;base64,AAAA"]),
+        )
+
+    assert len(producer.submitted) == 2   # tried once, retried once, then gave up
+
+
 def test_a_supplier_that_raises_does_not_kill_the_episode():
     producer = RecordingProducer()
 
