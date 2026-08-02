@@ -18,6 +18,22 @@ IMAGE_POLL_INTERVAL = 2
 EDIT_POLL_INTERVAL = 3
 
 
+def _describe_bases(base: str | list[str]) -> str:
+    """A short, loggable description of edit bases.
+
+    A base64 data URI runs to hundreds of KB. Printed raw, one storyboard
+    would bury the whole pipeline log.
+    """
+    items = base if isinstance(base, list) else [base]
+    parts = []
+    for item in items:
+        if item.startswith("data:"):
+            parts.append(f"<inline {len(item) // 1024}KB>")
+        else:
+            parts.append(item[:80])
+    return " + ".join(parts)
+
+
 class AtlasImageGenerator:
     """Generates reference images via GPT Image 2 on Atlas Cloud.
 
@@ -67,20 +83,21 @@ class AtlasImageGenerator:
 
         raise RuntimeError(f"Failed to generate reference image after {MAX_RETRIES} attempts.")
 
-    def edit_image(self, base_image_url: str, prompt: str) -> str:
-        """Generate a new image using GPT Image 2 Edit, anchored to a base
-        image. Used for per-shot storyboards: the locked character reference
-        is the base, the shot's scene description is the prompt, and the
-        output preserves the character's identity while showing them in the
-        shot-appropriate setting/pose.
+    def edit_image(self, base_image_url: str | list[str], prompt: str) -> str:
+        """Generate a new image using GPT Image 2 Edit, anchored to one or more
+        base images.
 
-        Atlas Cloud's image edit endpoint expects the base image to be a
-        publicly-accessible URL (not a file upload).
+        Single base -- the locked character reference. Two bases -- the locked
+        reference FIRST (the authority on identity) and the previous shot's last
+        frame SECOND (continuity of lighting, wardrobe and staging). Order is
+        the signal; the prompt tells the model which is which.
+
+        A base may be a public URL or a base64 data URI; Atlas accepts both.
         """
         for attempt in range(MAX_RETRIES):
             print(
                 f"[ImageGenerator] GPT Image 2 Edit — attempt {attempt + 1}/{MAX_RETRIES} "
-                f"— base: {base_image_url}",
+                f"— base: {_describe_bases(base_image_url)}",
                 flush=True,
             )
             try:
