@@ -262,15 +262,15 @@ def to_data_uri(image_path: str, *, max_edge: int = MAX_EDGE_PX) -> str:
     width, height = _probe_size(image_path)
     source = image_path
 
-    if max(width, height) > max_edge:
-        scale = max_edge / max(width, height)
-        target_w = _even(round(width * scale))
-        target_h = _even(round(height * scale))
-        # Preserve the longest edge exactly, so callers can assert on it.
+    longest = max(width, height)
+    if longest > max_edge:
+        # The longest edge lands on max_edge exactly; the other scales to match.
         if width >= height:
-            target_w = max_edge if max_edge % 2 == 0 else max_edge - 1
+            target_w = _even(max_edge)
+            target_h = _even(round(height * max_edge / longest))
         else:
-            target_h = max_edge if max_edge % 2 == 0 else max_edge - 1
+            target_h = _even(max_edge)
+            target_w = _even(round(width * max_edge / longest))
         source = os.path.join(
             os.path.dirname(image_path), f"scaled_{os.path.basename(image_path)}"
         )
