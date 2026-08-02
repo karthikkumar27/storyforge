@@ -951,7 +951,11 @@ class ChainedStoryboards:
                 bases = [self._reference, to_data_uri(frame)]
                 prompt = build_continuity_prompt(shot_prompt, self._style)
                 self._log(f"[Storyboard]   shot {index + 1} chained to the previous frame")
-            except (FrameExtractionError, OSError, ValueError) as exc:
+            # Broad on purpose: extract_last_frame raises FrameExtractionError,
+            # but to_data_uri shells out to ffmpeg with check=True, and
+            # CalledProcessError is NOT an OSError. Anything that goes wrong
+            # here costs continuity for one shot, never the episode.
+            except Exception as exc:
                 self._log(
                     f"[Storyboard]   shot {index + 1} could not chain ({exc}) "
                     f"— using the locked reference alone"
