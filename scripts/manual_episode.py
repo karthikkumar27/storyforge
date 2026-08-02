@@ -47,7 +47,7 @@ from modules.episode_ledger import get_episode_ledger
 from modules.sheet_access import SheetSession
 from modules.image_generator import AtlasImageGenerator
 from modules.script_generator import ScriptGenerator
-from modules.storyboard import build_storyboards
+from modules.storyboard import build_storyboards, ChainedStoryboards
 from modules.video_producer import AtlasVideoProducer
 
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -101,6 +101,9 @@ def main():
     ap.add_argument("--dry-run", action="store_true", help="Plan only — no API calls")
     ap.add_argument("--no-storyboards", action="store_true",
                     help="Use single ref image for all shots (skip per-shot GPT Image 2 Edit). Cheaper but may show character drift.")
+    ap.add_argument("--chain", action="store_true",
+                    help="Chain reference frames: each shot's storyboard also sees the "
+                         "previous shot's last frame. Fixes character drift across shots.")
     args = ap.parse_args()
 
     # Always the main sheet, whichever preset is active — this script is for
@@ -195,7 +198,11 @@ def main():
 
     # ===== 3. Per-shot storyboards (optional) =====
     storyboard_urls = None
-    if not args.no_storyboards:
+    storyboard_supplier = None
+    if args.chain:
+        print("\n[3/4] Chained storyboards — each shot sees the previous frame")
+        storyboard_supplier = ChainedStoryboards(ref_image_url, style=VIDEO_STYLE)
+    elif not args.no_storyboards:
         print("\n[3/4] Generating per-shot storyboards...")
         storyboard_urls = build_storyboards(shots, ref_image_url, style=VIDEO_STYLE)
     else:
@@ -211,6 +218,7 @@ def main():
         shots,
         reference_image_url=ref_image_url,
         storyboard_urls=storyboard_urls,
+        storyboard_supplier=storyboard_supplier,
     )
     print(f"      → stitched: {stitched_path}")
 
