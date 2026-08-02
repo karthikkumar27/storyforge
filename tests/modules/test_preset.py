@@ -105,6 +105,32 @@ def test_only_the_action_preset_leaves_its_ending_open():
     assert open_ended == ["preset-9"]
 
 
+# -- frame chaining -----------------------------------------------------------
+
+def test_chaining_without_per_shot_storyboards_is_rejected():
+    """The orchestrator gates all storyboard work on per_shot_storyboards, so
+    this combination silently produces NO storyboards at all and anchors every
+    shot to one shared reference — a full episode's video spend, no warning."""
+    with pytest.raises(ValueError, match="preset-x"):
+        from_raw("preset-x", dict(MINIMAL, chain_reference_frames=True))
+
+
+def test_chaining_alongside_per_shot_storyboards_is_fine():
+    preset = from_raw("preset-x", dict(
+        MINIMAL, per_shot_storyboards=True, chain_reference_frames=True,
+    ))
+
+    assert preset.chain_reference_frames is True
+
+
+def test_no_configured_preset_hits_the_chaining_guard():
+    """Guard against the guard: it must not reject anything already shipping."""
+    for key, raw in PRESETS.items():
+        preset = from_raw(key, raw)          # raises if the combination is invalid
+        if preset.chain_reference_frames:
+            assert preset.per_shot_storyboards, key
+
+
 # -- published title ----------------------------------------------------------
 
 def test_no_template_means_no_numbered_title():
