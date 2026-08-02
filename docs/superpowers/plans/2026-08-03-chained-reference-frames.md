@@ -878,6 +878,16 @@ from modules.frame_chain import (
 )
 ```
 
+Widen the `ImageEditor` Protocol at `modules/storyboard.py:36` so the seam
+matches what `ChainedStoryboards` actually sends through it. Task 3 widened the
+implementation; the Protocol that describes it must agree, or the declared
+contract for this module's one collaborator is a lie:
+
+```python
+    def edit_image(self, base_image_url: str | list[str], prompt: str) -> str:
+        ...
+```
+
 Append to `modules/storyboard.py`:
 
 ```python
