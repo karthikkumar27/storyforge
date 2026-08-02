@@ -344,3 +344,75 @@ def test_a_narration_preset_still_mixes(monkeypatch):
     run_pipeline(deps)
 
     assert uploader.uploads[0][0] == "/tmp/final.mp4"
+
+
+# -- storyboard routing -------------------------------------------------------
+#
+# The only production wiring for chained reference frames. A regression here
+# silently reverts preset-9 to the drift it was built to fix.
+
+def _explodes(what):
+    def boom(*_args, **_kwargs):
+        raise AssertionError(f"{what} must not run")
+    return boom
+
+
+@requires_shot_pipeline
+def test_a_chaining_preset_hands_produce_a_supplier_not_a_url_list(monkeypatch):
+    import orchestrator
+    monkeypatch.setattr(
+        orchestrator, "_preset",
+        replace(
+            orchestrator._preset,
+            per_shot_storyboards=True,
+            chain_reference_frames=True,
+            default_ref_image="https://cdn/ref.png",
+        ),
+    )
+    supplier = object()
+    built = []
+    producer = FakeVideoProducer()
+
+    deps, _ = _deps(
+        [_row(story_brief="b", status="pending")],
+        video_producer=producer,
+        storyboards=_explodes("the batch storyboard builder"),
+        chained_storyboards=lambda ref, **kw: built.append((ref, kw)) or supplier,
+    )
+
+    run_pipeline(deps)
+
+    assert built and built[0][0] == "https://cdn/ref.png"
+    _shots, kwargs = producer.calls[0]
+    assert kwargs["storyboard_supplier"] is supplier
+    assert kwargs["storyboard_urls"] is None
+
+
+@requires_shot_pipeline
+def test_a_non_chaining_preset_still_builds_storyboards_up_front(monkeypatch):
+    import orchestrator
+    monkeypatch.setattr(
+        orchestrator, "_preset",
+        replace(
+            orchestrator._preset,
+            per_shot_storyboards=True,
+            chain_reference_frames=False,
+            default_ref_image="https://cdn/ref.png",
+        ),
+    )
+    producer = FakeVideoProducer()
+
+    deps, _ = _deps(
+        [_row(story_brief="b", status="pending")],
+        video_producer=producer,
+        storyboards=lambda shots, ref, **kw: [f"https://cdn/sb{i}.png" for i in range(len(shots))],
+        chained_storyboards=_explodes("the chained storyboard supplier"),
+    )
+
+    run_pipeline(deps)
+
+    _shots, kwargs = producer.calls[0]
+    assert kwargs["storyboard_supplier"] is None
+    assert kwargs["storyboard_urls"] == [
+        "https://cdn/sb0.png", "https://cdn/sb1.png", "https://cdn/sb2.png",
+    ]
