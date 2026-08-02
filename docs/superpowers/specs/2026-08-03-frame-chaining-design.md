@@ -57,6 +57,7 @@ constrain the design and are recorded so they need not be re-bought.
 | Can a locally-held frame reach the edit endpoint without a bucket? | **Yes.** `image: "data:image/png;base64,…"` completes normally. No cloud storage dependency required. |
 | Can `openai/gpt-image-2/edit` take two base images? | **Yes.** Both `image: [a, b]` and `images: [a, b]` complete. `image_urls` is rejected with `request body field <image> is required`. |
 | Does a two-image edit respect `width`/`height`? | **No.** Returned 1536×1024 landscape on both variants despite `width: 768, height: 1344`. |
+| Does `model/generateVideo` also accept a data URI as `image`? | **Yes.** A 391KB base64 PNG was accepted and produced a 728×1268 clip that followed the input's aspect. This closes the loop: a locally-cropped storyboard can become a Seedance first frame with no hosting anywhere in the pipeline. |
 
 ### Incidental finding (out of scope, needs its own ticket)
 
@@ -165,6 +166,11 @@ Correction is **centre-crop, never letterbox**. A letterboxed still would carry
 black bars into the first frame, and Seedance would treat those bars as scene
 content and propagate them through the entire generated clip. Cropping loses
 edge detail; letterboxing would poison the shot.
+
+A cropped storyboard is a local file, and `model/generateVideo` needs an image
+reference — but it accepts base64 data URIs (§2), so the corrected still is
+handed to Seedance the same way the extracted frame is handed to the edit
+endpoint. **No stage of this pipeline requires hosted storage.**
 
 ---
 
