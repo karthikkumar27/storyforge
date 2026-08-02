@@ -35,6 +35,9 @@ FRAME_OFFSET_SEC = 0.4
 # a size proven to work against the Atlas edit endpoint.
 MAX_EDGE_PX = 768
 
+# Target shape for anything handed to Seedance as a first frame.
+PORTRAIT_RATIO = 9 / 16
+
 
 class FrameExtractionError(RuntimeError):
     """The clip could not yield a usable still."""
@@ -130,3 +133,65 @@ def fetch_image(url: str, dest_dir: str | None = None, *, http: Any = httpx) -> 
             for chunk in resp.iter_bytes(chunk_size=65536):
                 handle.write(chunk)
     return dest
+
+
+def normalise_portrait(image_path: str, *, ratio: float = PORTRAIT_RATIO) -> str:
+    """Centre-crop the image to 9:16 and return the corrected path.
+
+    Returns the input path unchanged when it is already the right shape.
+
+    CROP, never letterbox. This still becomes a Seedance first frame, and
+    Seedance reads black bars as scene content -- it would propagate them
+    through the whole generated clip. Losing edge detail is the cheaper cost.
+    """
+    width, height = _probe_size(image_path)
+    if abs((width / height) - ratio) < 0.01:
+        return image_path
+
+    if (width / height) > ratio:
+        crop_w, crop_h = _even(round(height * ratio)), _even(height)
+    else:
+        crop_w, crop_h = _even(width), _even(round(width / ratio))
+
+    dest = os.path.join(
+        os.path.dirname(image_path), f"portrait_{os.path.basename(image_path)}"
+    )
+    subprocess.run(
+        ["ffmpeg", "-y", "-v", "error", "-i", str(image_path),
+         "-vf", f"crop={crop_w}:{crop_h}", dest],
+        check=True, capture_output=True,
+    )
+    print(
+        f"[FrameChain] Corrected {width}x{height} -> {crop_w}x{crop_h} (centre-crop)",
+        flush=True,
+    )
+    return dest
+
+
+def portrait_anchor(image_url: str, *, fetch: Any = None) -> str:
+    """Return something Seedance can use as a 9:16 first frame.
+
+    A two-image edit silently returns landscape regardless of the width/height
+    requested, so every storyboard is measured rather than trusted.
+
+    Already 9:16 -> the hosted URL is returned untouched, which keeps the video
+    request small. Anything else -> centre-cropped locally and returned as a
+    data URI, which model/generateVideo accepts.
+
+    Never raises. Aspect correction is an enhancement; an uncorrected first
+    frame beats no first frame.
+    """
+    fetch = fetch or fetch_image
+    try:
+        local = fetch(image_url)
+        corrected = normalise_portrait(local)
+        if corrected == local:
+            return image_url
+        return to_data_uri(corrected)
+    except Exception as exc:
+        print(
+            f"[FrameChain] Could not verify aspect for {image_url[:60]}... "
+            f"({exc}) — using it as-is",
+            flush=True,
+        )
+        return image_url

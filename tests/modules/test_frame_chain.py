@@ -110,3 +110,102 @@ def test_fetch_image_writes_what_the_http_client_streamed(tmp_path):
     path = fetch_image("https://cdn/sb.png", dest_dir=str(tmp_path), http=StubHttp())
 
     assert open(path, "rb").read() == b"PNGDATA"
+
+
+from modules.frame_chain import PORTRAIT_RATIO, normalise_portrait
+
+
+def _solid(path, width, height):
+    subprocess.run(
+        ["ffmpeg", "-y", "-v", "error",
+         "-f", "lavfi", "-i", f"color=c=red:s={width}x{height}",
+         "-frames:v", "1", "-update", "1", str(path)],
+        check=True, capture_output=True,
+    )
+    return str(path)
+
+
+def test_a_landscape_still_is_cropped_to_portrait(tmp_path):
+    wide = _solid(tmp_path / "wide.png", 1536, 1024)
+
+    result = normalise_portrait(wide)
+
+    width, height = _probe_size(result)
+    assert height > width
+    assert abs((width / height) - PORTRAIT_RATIO) < 0.02
+
+
+def test_cropping_never_adds_bars(tmp_path):
+    """A letterboxed still would carry black bars into the first frame, and
+    Seedance would treat them as scene content for the whole clip."""
+    wide = _solid(tmp_path / "wide.png", 1536, 1024)
+
+    result = normalise_portrait(wide)
+
+    width, height = _probe_size(result)
+    assert width <= 1536 and height <= 1024   # cropped, never padded
+
+
+def test_an_already_portrait_still_is_returned_untouched(tmp_path):
+    tall = _solid(tmp_path / "tall.png", 768, 1344)
+
+    assert normalise_portrait(tall) == tall
+
+
+def test_a_too_tall_still_is_cropped_on_height(tmp_path):
+    skinny = _solid(tmp_path / "skinny.png", 400, 1600)
+
+    result = normalise_portrait(skinny)
+
+    width, height = _probe_size(result)
+    assert abs((width / height) - PORTRAIT_RATIO) < 0.02
+    assert width == 400
+
+
+def test_cropped_dimensions_are_even(tmp_path):
+    """yuv420p downstream requires even dimensions."""
+    odd = _solid(tmp_path / "odd.png", 1001, 777)
+
+    width, height = _probe_size(normalise_portrait(odd))
+
+    assert width % 2 == 0 and height % 2 == 0
+
+
+# -- portrait_anchor: what callers actually use -------------------------------
+
+def test_an_already_portrait_url_is_passed_through_untouched(tmp_path):
+    """No download, no re-encode, no 300KB inline payload — the hosted URL is
+    already exactly what Seedance needs."""
+    from modules.frame_chain import portrait_anchor
+    calls = []
+
+    def fetch(url, dest_dir=None):
+        calls.append(url)
+        return _solid(tmp_path / "tall.png", 768, 1344)
+
+    result = portrait_anchor("https://cdn/sb.png", fetch=fetch)
+
+    assert result == "https://cdn/sb.png"
+    assert len(calls) == 1   # fetched once to measure, then discarded
+
+
+def test_a_landscape_url_comes_back_as_a_cropped_data_uri(tmp_path):
+    from modules.frame_chain import portrait_anchor
+
+    def fetch(url, dest_dir=None):
+        return _solid(tmp_path / "wide.png", 1536, 1024)
+
+    result = portrait_anchor("https://cdn/sb.png", fetch=fetch)
+
+    assert result.startswith("data:image/png;base64,")
+
+
+def test_a_fetch_failure_falls_back_to_the_original_url(tmp_path):
+    """Aspect correction is an enhancement. If it cannot run, the un-corrected
+    URL is still better than no first frame at all."""
+    from modules.frame_chain import portrait_anchor
+
+    def fetch(url, dest_dir=None):
+        raise OSError("connection reset")
+
+    assert portrait_anchor("https://cdn/sb.png", fetch=fetch) == "https://cdn/sb.png"
