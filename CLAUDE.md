@@ -74,6 +74,7 @@ idea-creator/
 │   ├── characters_reader.py  ← Preset-7 characters sheet (locked roster)
 │   ├── preset.py             ← Active Preset as a value: capabilities, not identity checks
 │   ├── storyboard.py         ← Per-shot storyboard frames (POV/wide detection + edit prompts)
+│   ├── frame_chain.py        ← Carries a shot's last frame forward as a 2nd storyboard base (9:16 crop + data URI)
 │   ├── arc_context.py        ← Preset-7 episode_number → arc_number resolver
 │   ├── skill_loader.py       ← Reads skills/*/SKILL.md and concatenates
 │   └── title_card_renderer.py ← PNG+MP3 → MP4 with content-hash cache
@@ -122,7 +123,7 @@ idea-creator/
 | `preset-6` | Kids — Croc Academy | science-lesson, math-fun, nature-explore, history-adventure | series (999) | Liam | 3D animated |
 | `preset-7` | **Zenith Chronicles** | origin-story, transformation, galaxy-quest, earth-encounter | series (999, but really 200) | Adam | **Special — see below** |
 | `preset-8` | Cinematic Drone | urban-chase, wildlife-encounter, impossible-vista, human-reaction, landscape-sweep, coastal-flight | standalone | — | `single_shot_native` — one Seedance call, no script/storyboards/stitch |
-| `preset-9` | Modern Shōnen Action | rival-showdown, power-awakening, outnumbered-stand, master-duel, rooftop-chase, sealed-enemy | standalone | Adam | `ending_style: open` — the fight is cut at its peak |
+| `preset-9` | Modern Shōnen Action | rival-showdown, power-awakening, outnumbered-stand, master-duel, rooftop-chase, sealed-enemy | standalone | Adam | `ending_style: open` — the fight is cut at its peak; `chain_reference_frames` — each storyboard also sees the previous shot's last frame (requires `per_shot_storyboards`) |
 
 Set `CONTENT_PRESET=preset-N` in `.env`. The active preset drives genre, voice, video style, story mode, sheet routing, skill loading, and YouTube category.
 
