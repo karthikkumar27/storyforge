@@ -395,6 +395,9 @@ PRESETS = {
         "series_parts": 1,
         "youtube_category": "1",      # Film & Animation
         "per_shot_storyboards": True,
+        # Each shot's storyboard also sees the previous shot's last frame, so
+        # the lead stops changing eye colour and outfit between shots.
+        "chain_reference_frames": True,
         # The capability this preset exists to exercise — the confrontation is
         # cut at its peak instead of resolving. See Preset.narrative_closure_rule.
         "ending_style": "open",

@@ -20,7 +20,7 @@ from modules.video_producer import (
     AtlasSeedance1_5T2VFastProducer,
 )
 from modules.audio_mixer import AudioMixer
-from modules.storyboard import build_storyboards
+from modules.storyboard import build_storyboards, ChainedStoryboards
 from modules.youtube_uploader import YouTubeUploader
 
 
@@ -52,6 +52,7 @@ class Deps:
     image_generator: Callable[[], Any] = create_image_generator
     atlas_image_generator: Callable[[], Any] = AtlasImageGenerator
     storyboards: Callable[..., list] = build_storyboards
+    chained_storyboards: Callable[..., Any] = ChainedStoryboards
     video_producer: Callable[[], Any] = create_video_producer
     audio_mixer: Callable[[], Any] = AudioMixer
     uploader: Callable[[], Any] = YouTubeUploader
@@ -278,22 +279,34 @@ def run_pipeline(deps: Deps | None = None) -> dict:
         if ref_image_url:
             ledger.record(row_index, ref_image_url=ref_image_url)
 
-        # Premium: per-shot storyboard generation. Opt-in per preset via
+        # Per-shot storyboard generation. Opt-in per preset via
         # `per_shot_storyboards: True` in config. For each shot, GPT Image 2
         # Edit takes the reference image as the base and the shot's scene
         # description as the prompt, producing a shot-appropriate first frame
         # that preserves the character's identity. Solves wallpaper-effect
         # and character drift across shots.
+        #
+        # With `chain_reference_frames: True` the storyboards are generated
+        # lazily, one per shot, each also seeing the previous shot's last
+        # frame — so identity carries forward from what actually rendered.
         storyboard_urls: list[str | None] | None = None
+        storyboard_supplier = None
         if _preset.per_shot_storyboards and ref_image_url:
-            storyboard_urls = deps.storyboards(
-                script_result["shots"], ref_image_url, style=VIDEO_STYLE,
-            )
+            if _preset.chain_reference_frames:
+                storyboard_supplier = deps.chained_storyboards(
+                    ref_image_url, style=VIDEO_STYLE,
+                )
+                print("[Pipeline] Chained storyboards enabled", flush=True)
+            else:
+                storyboard_urls = deps.storyboards(
+                    script_result["shots"], ref_image_url, style=VIDEO_STYLE,
+                )
 
         video_path = deps.video_producer().produce(
             script_result["shots"],
             reference_image_url=ref_image_url,
             storyboard_urls=storyboard_urls,
+            storyboard_supplier=storyboard_supplier,
         )
 
         # Audio mix routing:

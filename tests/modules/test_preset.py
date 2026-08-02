@@ -202,3 +202,31 @@ def test_active_preset_follows_the_environment(monkeypatch):
 
     assert active_preset().key == "preset-7"
     assert active_preset().serialized_canon is True
+
+
+def test_chaining_is_off_unless_a_preset_asks_for_it():
+    from modules.preset import from_raw
+    from config import PRESETS
+
+    for key, raw in PRESETS.items():
+        if key == "preset-9":
+            continue
+        assert from_raw(key, raw).chain_reference_frames is False, key
+
+
+def test_preset_9_chains_reference_frames():
+    from modules.preset import from_raw
+    from config import PRESETS
+
+    assert from_raw("preset-9", PRESETS["preset-9"]).chain_reference_frames is True
+
+
+def test_preset_7_still_uses_batch_storyboards_not_chaining():
+    """preset-7 is a 200-episode series with locked canon — it does not get
+    this until a real before/after proves the two-base call holds fidelity."""
+    from modules.preset import from_raw
+    from config import PRESETS
+
+    preset = from_raw("preset-7", PRESETS["preset-7"])
+    assert preset.per_shot_storyboards is True
+    assert preset.chain_reference_frames is False
