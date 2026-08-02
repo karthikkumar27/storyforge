@@ -183,3 +183,139 @@ def test_progress_is_reported_per_shot():
 
     assert any("shot 1/2" in line for line in lines)
     assert any("shot 2/2" in line for line in lines)
+
+
+from modules.storyboard import ChainedStoryboards, build_continuity_prompt
+
+
+class ListEditor:
+    """StubEditor's sibling: accepts a list-or-string base, records both."""
+
+    def __init__(self, results=None):
+        self.results = list(results or [])
+        self.calls = []
+
+    def edit_image(self, base_image_url, prompt):
+        self.calls.append((base_image_url, prompt))
+        if self.results:
+            result = self.results.pop(0)
+            if isinstance(result, Exception):
+                raise result
+            return result
+        return f"https://cdn/chained{len(self.calls)}.png"
+
+
+# -- the continuity prompt ----------------------------------------------------
+
+def test_continuity_prompt_names_which_base_owns_identity():
+    """Probing showed text wins over images when they conflict, so the
+    instruction has to be explicit about precedence."""
+    prompt = build_continuity_prompt("Kenji lunges forward", "anime cel-shaded")
+
+    assert "first image" in prompt.lower()
+    assert "second image" in prompt.lower()
+    assert "Scene: Kenji lunges forward" in prompt
+
+
+def test_continuity_prompt_still_asks_for_a_vertical_first_frame():
+    prompt = build_continuity_prompt("Kenji lunges forward", "anime")
+
+    assert "9:16" in prompt
+    assert "START of the action" in prompt
+    assert "no motion blur" in prompt
+
+
+# -- the supplier -------------------------------------------------------------
+
+def test_first_shot_uses_the_reference_alone():
+    editor = ListEditor()
+    supplier = ChainedStoryboards(
+        "https://cdn/ref.png", style="anime", generator=editor, log=lambda _: None,
+    )
+
+    supplier.frame_for(0, "the bridge at night", None)
+
+    base, _ = editor.calls[0]
+    assert base == "https://cdn/ref.png"
+
+
+def test_later_shots_pass_reference_first_and_previous_frame_second(monkeypatch, tmp_path):
+    clip = tmp_path / "shot_00.mp4"
+    clip.write_bytes(b"fake")
+    monkeypatch.setattr(
+        "modules.storyboard.extract_last_frame", lambda path, **kw: str(clip)
+    )
+    monkeypatch.setattr(
+        "modules.storyboard.to_data_uri", lambda path, **kw: "data:image/png;base64,ZZZ"
+    )
+    editor = ListEditor()
+    supplier = ChainedStoryboards(
+        "https://cdn/ref.png", style="anime", generator=editor, log=lambda _: None,
+    )
+
+    supplier.frame_for(1, "Kenji lunges", str(clip))
+
+    base, _ = editor.calls[0]
+    assert base == ["https://cdn/ref.png", "data:image/png;base64,ZZZ"]
+
+
+def test_extraction_failure_falls_back_to_the_reference_alone(monkeypatch, tmp_path):
+    """One shot loses continuity; the episode continues."""
+    from modules.frame_chain import FrameExtractionError
+    clip = tmp_path / "shot_00.mp4"
+    clip.write_bytes(b"fake")
+
+    def boom(path, **kw):
+        raise FrameExtractionError("corrupt clip")
+
+    monkeypatch.setattr("modules.storyboard.extract_last_frame", boom)
+    editor = ListEditor()
+    supplier = ChainedStoryboards(
+        "https://cdn/ref.png", style="anime", generator=editor, log=lambda _: None,
+    )
+
+    result = supplier.frame_for(1, "Kenji lunges", str(clip))
+
+    assert editor.calls[0][0] == "https://cdn/ref.png"
+    assert result is not None
+
+
+def test_an_edit_failure_returns_none_rather_than_raising():
+    """None tells the video producer to fall back to the shared reference."""
+    editor = ListEditor([RuntimeError("content filter")])
+    supplier = ChainedStoryboards(
+        "https://cdn/ref.png", style="anime", generator=editor, log=lambda _: None,
+    )
+
+    assert supplier.frame_for(0, "the bridge", None) is None
+
+
+def test_character_absent_shots_still_use_the_style_only_prompt():
+    editor = ListEditor()
+    supplier = ChainedStoryboards(
+        "https://cdn/ref.png", style="anime", generator=editor, log=lambda _: None,
+    )
+
+    supplier.frame_for(0, "POV shot — the altar cracks", None)
+
+    _, prompt = editor.calls[0]
+    assert "STYLE anchor only" in prompt
+
+
+def test_the_result_is_aspect_checked_before_it_is_returned(monkeypatch):
+    """A two-image edit silently returns landscape. Every storyboard goes
+    through portrait_anchor before it can become a first frame."""
+    seen = []
+    monkeypatch.setattr(
+        "modules.storyboard.portrait_anchor",
+        lambda url, **kw: seen.append(url) or "data:image/png;base64,CROPPED",
+    )
+    editor = ListEditor(["https://cdn/wide.png"])
+    supplier = ChainedStoryboards(
+        "https://cdn/ref.png", style="anime", generator=editor, log=lambda _: None,
+    )
+
+    result = supplier.frame_for(0, "the bridge", None)
+
+    assert seen == ["https://cdn/wide.png"]
+    assert result == "data:image/png;base64,CROPPED"
