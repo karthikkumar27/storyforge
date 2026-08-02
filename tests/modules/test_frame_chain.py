@@ -200,6 +200,25 @@ def test_a_landscape_url_comes_back_as_a_cropped_data_uri(tmp_path):
     assert result.startswith("data:image/png;base64,")
 
 
+def test_the_anchor_keeps_enough_resolution_for_a_720p_clip(tmp_path):
+    """The video endpoint gets its own cap. A 1536x1024 edit crops to 576x1024,
+    and under the edit endpoint's 768 cap that would encode at 432x768 — a
+    third of the pixels Seedance renders, and a visible softness step at
+    exactly the shot-1/shot-2 boundary chaining exists to smooth."""
+    from modules.frame_chain import ANCHOR_MAX_EDGE_PX, MAX_EDGE_PX, portrait_anchor
+
+    assert ANCHOR_MAX_EDGE_PX > MAX_EDGE_PX   # separate caps, separate endpoints
+
+    def fetch(url, dest_dir=None):
+        return _solid(tmp_path / "wide.png", 1536, 1024)
+
+    uri = portrait_anchor("https://cdn/sb.png", fetch=fetch)
+    out = tmp_path / "anchor.png"
+    out.write_bytes(base64.b64decode(uri.split(",", 1)[1]))
+
+    assert _probe_size(str(out)) == (576, 1024)
+
+
 def test_a_fetch_failure_falls_back_to_the_original_url(tmp_path):
     """Aspect correction is an enhancement. If it cannot run, the un-corrected
     URL is still better than no first frame at all."""

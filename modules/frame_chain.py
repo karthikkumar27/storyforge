@@ -31,9 +31,19 @@ import httpx
 # close enough that it is still the shot's ending state.
 FRAME_OFFSET_SEC = 0.4
 
-# Longest edge of the encoded frame. 768px keeps the base64 payload near 300KB,
-# a size proven to work against the Atlas edit endpoint.
+# Longest edge of a frame encoded for the *image-edit* endpoint
+# (openai/gpt-image-2/edit). 768px keeps the base64 payload near 300KB, a size
+# proven to work there during probing.
 MAX_EDGE_PX = 768
+
+# Longest edge of a still encoded for the *video* endpoint
+# (model/generateVideo). Deliberately a separate number from MAX_EDGE_PX: the
+# two endpoints have different payload tolerances and must not silently share
+# one constant. A still sent here becomes a Seedance FIRST FRAME, and Seedance
+# renders 720x1280 — capping at 768 would hand it a 432x768 anchor, roughly a
+# third of the output's pixels, and the softness shows. 1024 keeps the anchor
+# at or above the clip's own resolution on the short edge.
+ANCHOR_MAX_EDGE_PX = 1024
 
 # Target shape for anything handed to Seedance as a first frame.
 PORTRAIT_RATIO = 9 / 16
@@ -90,20 +100,28 @@ def extract_last_frame(
     return dest
 
 
+def _encoded_size(width: int, height: int, max_edge: int) -> tuple[int, int]:
+    """The dimensions an image of this size is actually encoded at.
+
+    Shared by to_data_uri (which does the scaling) and its callers (which want
+    to log what they sent) so the arithmetic exists in exactly one place.
+    """
+    longest = max(width, height)
+    if longest <= max_edge:
+        return width, height
+    # The longest edge lands on max_edge exactly; the other scales to match.
+    if width >= height:
+        return _even(max_edge), _even(round(height * max_edge / longest))
+    return _even(round(width * max_edge / longest)), _even(max_edge)
+
+
 def to_data_uri(image_path: str, *, max_edge: int = MAX_EDGE_PX) -> str:
     """Return the image as a base64 data URI, downscaling only if oversized."""
     width, height = _probe_size(image_path)
     source = image_path
 
-    longest = max(width, height)
-    if longest > max_edge:
-        # The longest edge lands on max_edge exactly; the other scales to match.
-        if width >= height:
-            target_w = _even(max_edge)
-            target_h = _even(round(height * max_edge / longest))
-        else:
-            target_h = _even(max_edge)
-            target_w = _even(round(width * max_edge / longest))
+    target_w, target_h = _encoded_size(width, height, max_edge)
+    if (target_w, target_h) != (width, height):
         source = os.path.join(
             os.path.dirname(image_path), f"scaled_{os.path.basename(image_path)}"
         )
@@ -178,6 +196,10 @@ def portrait_anchor(image_url: str, *, fetch: Any = None) -> str:
     request small. Anything else -> centre-cropped locally and returned as a
     data URI, which model/generateVideo accepts.
 
+    Encoded at ANCHOR_MAX_EDGE_PX, not MAX_EDGE_PX: this still goes to the
+    video endpoint, and 768 there would leave shots 2-N visibly softer than
+    shot 1 (which passes a full-size hosted URL through).
+
     Never raises. Aspect correction is an enhancement; an uncorrected first
     frame beats no first frame.
     """
@@ -187,7 +209,18 @@ def portrait_anchor(image_url: str, *, fetch: Any = None) -> str:
         corrected = normalise_portrait(local)
         if corrected == local:
             return image_url
-        return to_data_uri(corrected)
+        uri = to_data_uri(corrected, max_edge=ANCHOR_MAX_EDGE_PX)
+        # Logged so the paid verification run tells us what Atlas actually
+        # accepts at this size — the probe only ever proved 391KB.
+        encoded_w, encoded_h = _encoded_size(
+            *_probe_size(corrected), ANCHOR_MAX_EDGE_PX
+        )
+        print(
+            f"[FrameChain] Anchor payload: {len(uri) // 1024}KB "
+            f"at {encoded_w}x{encoded_h}",
+            flush=True,
+        )
+        return uri
     except Exception as exc:
         print(
             f"[FrameChain] Could not verify aspect for {image_url[:60]}... "
