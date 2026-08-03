@@ -19,6 +19,7 @@ from config import (
     SEEDANCE_POLL_INTERVAL_SEC, SEEDANCE_MAX_POLL_ATTEMPTS,
 )
 from modules.atlas_client import AtlasClient
+from modules.frame_chain import shrink_data_uri
 
 
 class StoryboardSupplier(Protocol):
@@ -192,17 +193,43 @@ class BaseVideoProducer(ABC):
                 except Exception as exc:
                     # An inline data: payload is the least-proven body shape we
                     # send, and Atlas is known to reject bodies it accepts
-                    # minutes later. Dropping back to the hosted reference costs
-                    # this shot's continuity; not retrying costs the episode,
-                    # with the earlier shots already paid for.
+                    # minutes later. The retry ladder from here:
+                    #   1. same storyboard, re-encoded smaller (shrink_data_uri)
+                    #   2. the shared reference (or None)
+                    # A non-data: anchor skips straight to raising — a hosted
+                    # URL failing means something is genuinely wrong, not an
+                    # oversized-payload rejection.
                     if not (isinstance(ref_url, str) and ref_url.startswith("data:")):
                         raise
                     print(
                         f"[VideoProducer]   shot {i+1} rejected its inline anchor "
-                        f"({exc}) — retrying with the shared reference",
+                        f"({exc}) — trying a shrunk variant",
                         flush=True,
                     )
-                    task_id = self._submit_shot(prompt, reference_image_url)
+                    shrunk = shrink_data_uri(ref_url)
+                    if shrunk is None:
+                        print(
+                            f"[VideoProducer]   shot {i+1} had no smaller variant to "
+                            f"try — retrying with the shared reference",
+                            flush=True,
+                        )
+                        task_id = self._submit_shot(prompt, reference_image_url)
+                    else:
+                        try:
+                            task_id = self._submit_shot(prompt, shrunk)
+                            print(
+                                f"[VideoProducer]   shot {i+1} accepted the shrunk "
+                                f"anchor",
+                                flush=True,
+                            )
+                        except Exception as exc2:
+                            print(
+                                f"[VideoProducer]   shot {i+1} rejected the shrunk "
+                                f"anchor too ({exc2}) — retrying with the shared "
+                                f"reference",
+                                flush=True,
+                            )
+                            task_id = self._submit_shot(prompt, reference_image_url)
                 print(f"[VideoProducer] Polling task {task_id}...", flush=True)
                 video_url = self._poll_shot(task_id)
                 clip_path = os.path.join(workdir, f"shot_{i:02d}.mp4")

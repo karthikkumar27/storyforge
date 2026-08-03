@@ -403,3 +403,103 @@ def test_a_supplier_that_raises_does_not_kill_the_episode():
     )
 
     assert producer.submitted[0][1] == "https://cdn/ref.png"
+
+
+# -- the shrink rung: a rejected inline anchor tries a smaller re-encode ------
+# -- of the SAME storyboard before falling back to the shared reference -------
+#
+# The full ladder is: inline anchor at ANCHOR_MAX_EDGE_PX -> rejected -> same
+# storyboard re-encoded at MAX_EDGE_PX -> rejected too -> reference_image_url
+# (or None) -> still fails -> propagate. shrink_data_uri itself is exercised
+# for real in test_frame_chain.py; here it's stubbed so these tests are about
+# produce()'s ladder logic, not frame_chain's image pipeline.
+
+class RejectsOnlyTheOversizedAnchor(RecordingProducer):
+    """Rejects exactly one literal payload -- the "full-size" anchor -- and
+    accepts everything else, including a shrunk variant or the shared
+    reference. Lets a test prove the middle rung fired by checking which
+    anchor a shot was actually submitted with."""
+
+    def _submit_shot(self, prompt, reference_image_url=None):
+        self.submitted.append((prompt, reference_image_url))
+        if reference_image_url == "data:image/png;base64,BIG":
+            raise RuntimeError("request body field <image> exceeds size limit")
+        return f"task_{len(self.submitted)}"
+
+
+def test_a_rejected_inline_anchor_retries_with_a_shrunk_variant(monkeypatch):
+    monkeypatch.setattr(
+        "modules.video_producer.shrink_data_uri",
+        lambda uri, **kw: "data:image/png;base64,SMALL",
+    )
+    producer = RejectsOnlyTheOversizedAnchor()
+    supplier = StubSupplier(["data:image/png;base64,BIG"])
+
+    _run(
+        producer, shots=["one"],
+        reference_image_url="https://cdn/ref.png",
+        storyboard_supplier=supplier,
+    )
+
+    assert [r for _, r in producer.submitted] == [
+        "data:image/png;base64,BIG",     # rejected
+        "data:image/png;base64,SMALL",   # shrunk variant accepted
+    ]
+    assert len(producer.submitted) == 2   # the middle rung fired, not the reference
+
+
+class RejectsAnyInlinePayload(RecordingProducer):
+    """Rejects any data: URI, full-size or shrunk -- only a hosted URL (or
+    None) is accepted."""
+
+    def _submit_shot(self, prompt, reference_image_url=None):
+        self.submitted.append((prompt, reference_image_url))
+        if reference_image_url and reference_image_url.startswith("data:"):
+            raise RuntimeError("request body field <image> exceeds size limit")
+        return f"task_{len(self.submitted)}"
+
+
+def test_a_rejected_shrunk_anchor_falls_through_to_the_shared_reference(monkeypatch):
+    monkeypatch.setattr(
+        "modules.video_producer.shrink_data_uri",
+        lambda uri, **kw: "data:image/png;base64,SMALL",
+    )
+    producer = RejectsAnyInlinePayload()
+    supplier = StubSupplier(["data:image/png;base64,BIG"])
+
+    _run(
+        producer, shots=["one"],
+        reference_image_url="https://cdn/ref.png",
+        storyboard_supplier=supplier,
+    )
+
+    assert [r for _, r in producer.submitted] == [
+        "data:image/png;base64,BIG",     # rejected
+        "data:image/png;base64,SMALL",   # shrunk variant also rejected
+        "https://cdn/ref.png",           # falls through to the shared reference
+    ]
+    assert len(producer.submitted) == 3
+
+
+def test_a_shrink_that_finds_nothing_smaller_skips_straight_to_the_reference(monkeypatch):
+    """shrink_data_uri returning None means "no smaller variant" -- that is
+    not a failure, so it must not be treated like one. It's a skip, not a
+    retry, and costs no extra submit attempt."""
+    monkeypatch.setattr(
+        "modules.video_producer.shrink_data_uri",
+        lambda uri, **kw: None,
+    )
+    producer = RejectsInlineAnchors()
+    supplier = StubSupplier(["data:image/png;base64,AAAA"])
+
+    _run(
+        producer, shots=["one"],
+        reference_image_url="https://cdn/ref.png",
+        storyboard_supplier=supplier,
+    )
+
+    assert [r for _, r in producer.submitted] == [
+        "data:image/png;base64,AAAA",   # rejected
+        "https://cdn/ref.png",          # shrink skipped -- straight to the reference
+    ]
+    assert len(producer.submitted) == 2
