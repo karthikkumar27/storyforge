@@ -30,18 +30,20 @@ it without code changes.
 | `error_msg` | string | pipeline (on failure) | Last error |
 | `arc_number` | int | pipeline (auto-added) | 1-10, derived from episode_number |
 | `episode_number` | int | pipeline (auto-added) | Absolute episode number 1-200 |
+| `character_appearance` | string | pipeline (auto-added) | The prompt that generated `ref_image_url`, saved alongside it so a rerun reads the words that actually match the image rather than a freshly regenerated one |
 
 ### Pasteable header row (CSV)
 
 ```
-title,story_brief,script_text,ref_image_url,genre,series_id,part_number,story_mode,duration_sec,status,youtube_url,error_msg,arc_number,episode_number
+title,story_brief,script_text,ref_image_url,genre,series_id,part_number,story_mode,duration_sec,status,youtube_url,error_msg,arc_number,episode_number,character_appearance
 ```
 
 ### Auto-added columns
 
-`arc_number` and `episode_number` are added automatically by `ensure_columns()`
-the first time the pipeline runs against the sheet. You don't need to add them
-by hand.
+`arc_number`, `episode_number`, `character_form`, and `character_appearance`
+are added automatically by `ensure_columns()` — on `record()` as well as when
+a new episode row is appended — the first time the pipeline runs against the
+sheet. You don't need to add them by hand.
 
 ---
 

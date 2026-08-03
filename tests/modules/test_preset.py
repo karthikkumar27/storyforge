@@ -105,6 +105,32 @@ def test_only_the_action_preset_leaves_its_ending_open():
     assert open_ended == ["preset-9"]
 
 
+# -- frame chaining -----------------------------------------------------------
+
+def test_chaining_without_per_shot_storyboards_is_rejected():
+    """The orchestrator gates all storyboard work on per_shot_storyboards, so
+    this combination silently produces NO storyboards at all and anchors every
+    shot to one shared reference — a full episode's video spend, no warning."""
+    with pytest.raises(ValueError, match="preset-x"):
+        from_raw("preset-x", dict(MINIMAL, chain_reference_frames=True))
+
+
+def test_chaining_alongside_per_shot_storyboards_is_fine():
+    preset = from_raw("preset-x", dict(
+        MINIMAL, per_shot_storyboards=True, chain_reference_frames=True,
+    ))
+
+    assert preset.chain_reference_frames is True
+
+
+def test_no_configured_preset_hits_the_chaining_guard():
+    """Guard against the guard: it must not reject anything already shipping."""
+    for key, raw in PRESETS.items():
+        preset = from_raw(key, raw)          # raises if the combination is invalid
+        if preset.chain_reference_frames:
+            assert preset.per_shot_storyboards, key
+
+
 # -- published title ----------------------------------------------------------
 
 def test_no_template_means_no_numbered_title():
@@ -202,3 +228,31 @@ def test_active_preset_follows_the_environment(monkeypatch):
 
     assert active_preset().key == "preset-7"
     assert active_preset().serialized_canon is True
+
+
+def test_chaining_is_off_unless_a_preset_asks_for_it():
+    from modules.preset import from_raw
+    from config import PRESETS
+
+    for key, raw in PRESETS.items():
+        if key == "preset-9":
+            continue
+        assert from_raw(key, raw).chain_reference_frames is False, key
+
+
+def test_preset_9_chains_reference_frames():
+    from modules.preset import from_raw
+    from config import PRESETS
+
+    assert from_raw("preset-9", PRESETS["preset-9"]).chain_reference_frames is True
+
+
+def test_preset_7_still_uses_batch_storyboards_not_chaining():
+    """preset-7 is a 200-episode series with locked canon — it does not get
+    this until a real before/after proves the two-base call holds fidelity."""
+    from modules.preset import from_raw
+    from config import PRESETS
+
+    preset = from_raw("preset-7", PRESETS["preset-7"])
+    assert preset.per_shot_storyboards is True
+    assert preset.chain_reference_frames is False

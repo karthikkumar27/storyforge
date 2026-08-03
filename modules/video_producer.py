@@ -4,7 +4,7 @@ import time
 import subprocess
 import tempfile
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, Protocol
 
 import httpx
 
@@ -19,6 +19,21 @@ from config import (
     SEEDANCE_POLL_INTERVAL_SEC, SEEDANCE_MAX_POLL_ATTEMPTS,
 )
 from modules.atlas_client import AtlasClient
+from modules.frame_chain import shrink_data_uri
+
+
+class StoryboardSupplier(Protocol):
+    """Yields the first-frame still for one shot, given what came before.
+
+    `previous_clip` is None for the first shot. Returning None means "no
+    storyboard for this shot" and the producer falls back to the shared
+    reference image.
+    """
+
+    def frame_for(
+        self, index: int, shot_prompt: str, previous_clip: str | None
+    ) -> str | None:
+        ...
 
 
 class BaseVideoProducer(ABC):
@@ -142,16 +157,22 @@ class BaseVideoProducer(ABC):
         shots: list[str],
         reference_image_url: str | None = None,
         storyboard_urls: list[str] | None = None,
+        storyboard_supplier: "StoryboardSupplier | None" = None,
     ) -> str:
         """Produce a stitched video from a list of shot prompts.
 
-        Two modes for first-frame anchoring:
+        Three modes for first-frame anchoring, in priority order:
+
+        - **Chained (preset-9)**: caller passes `storyboard_supplier`. It is
+          called once per shot with the PREVIOUS shot's clip, so each
+          storyboard can carry character identity forward from what actually
+          rendered. Requires the shot loop and the storyboard loop to
+          interleave, which is why this is a callback rather than a list.
 
         - **Premium (preset-7)**: caller passes `storyboard_urls` — one URL per
-          shot, each generated upstream by GPT Image 2 Edit using the locked
-          character ref + shot prompt. Each shot is anchored to its own
-          shot-appropriate frame, giving locked character identity AND varied
-          starting poses. This is what fixes the wallpaper-effect problem.
+          shot, generated upstream before production starts. Each shot is
+          anchored to its own shot-appropriate frame, giving locked character
+          identity AND varied starting poses.
 
         - **Legacy**: caller passes a single `reference_image_url` — used as
           the first frame for all shots (other presets, or fallback when
@@ -160,22 +181,61 @@ class BaseVideoProducer(ABC):
         workdir = tempfile.mkdtemp(prefix="cinematic_")
         try:
             clip_paths = []
+            previous_clip: str | None = None
             for i, prompt in enumerate(shots):
                 print(f"[VideoProducer] Submitting shot {i+1}/{len(shots)}", flush=True)
-                # Pick per-shot storyboard if provided, else fall back to single ref
-                if storyboard_urls and i < len(storyboard_urls) and storyboard_urls[i]:
-                    ref_url = storyboard_urls[i]
-                    print(f"[VideoProducer]   shot {i+1} anchor: per-shot storyboard", flush=True)
-                else:
-                    ref_url = reference_image_url
-                    if ref_url:
-                        print(f"[VideoProducer]   shot {i+1} anchor: shared locked ref", flush=True)
-                task_id = self._submit_shot(prompt, ref_url)
+                ref_url = self._anchor_for(
+                    i, prompt, previous_clip, storyboard_urls,
+                    reference_image_url, storyboard_supplier,
+                )
+                try:
+                    task_id = self._submit_shot(prompt, ref_url)
+                except Exception as exc:
+                    # An inline data: payload is the least-proven body shape we
+                    # send, and Atlas is known to reject bodies it accepts
+                    # minutes later. The retry ladder from here:
+                    #   1. same storyboard, re-encoded smaller (shrink_data_uri)
+                    #   2. the shared reference (or None)
+                    # A non-data: anchor skips straight to raising — a hosted
+                    # URL failing means something is genuinely wrong, not an
+                    # oversized-payload rejection.
+                    if not (isinstance(ref_url, str) and ref_url.startswith("data:")):
+                        raise
+                    print(
+                        f"[VideoProducer]   shot {i+1} rejected its inline anchor "
+                        f"({exc}) — trying a shrunk variant",
+                        flush=True,
+                    )
+                    shrunk = shrink_data_uri(ref_url)
+                    if shrunk is None:
+                        print(
+                            f"[VideoProducer]   shot {i+1} had no smaller variant to "
+                            f"try — retrying with the shared reference",
+                            flush=True,
+                        )
+                        task_id = self._submit_shot(prompt, reference_image_url)
+                    else:
+                        try:
+                            task_id = self._submit_shot(prompt, shrunk)
+                            print(
+                                f"[VideoProducer]   shot {i+1} accepted the shrunk "
+                                f"anchor",
+                                flush=True,
+                            )
+                        except Exception as exc2:
+                            print(
+                                f"[VideoProducer]   shot {i+1} rejected the shrunk "
+                                f"anchor too ({exc2}) — retrying with the shared "
+                                f"reference",
+                                flush=True,
+                            )
+                            task_id = self._submit_shot(prompt, reference_image_url)
                 print(f"[VideoProducer] Polling task {task_id}...", flush=True)
                 video_url = self._poll_shot(task_id)
                 clip_path = os.path.join(workdir, f"shot_{i:02d}.mp4")
                 self._download_clip(video_url, clip_path)
                 clip_paths.append(clip_path)
+                previous_clip = clip_path
                 print(f"[VideoProducer] Shot {i+1} downloaded", flush=True)
 
             # Optional title/end cards — built once and cached, reused across episodes.
@@ -202,6 +262,39 @@ class BaseVideoProducer(ABC):
             # folders eventually; a stuck folder costs nothing locally.
             print(f"[VideoProducer] FAILED — shots preserved at {workdir}", flush=True)
             raise
+
+    def _anchor_for(
+        self,
+        index: int,
+        prompt: str,
+        previous_clip: str | None,
+        storyboard_urls: list[str] | None,
+        reference_image_url: str | None,
+        supplier: "StoryboardSupplier | None",
+    ) -> str | None:
+        """Resolve one shot's first frame. Never raises — an anchor is an
+        enhancement, and losing it costs pose variety, not the episode."""
+        if supplier is not None:
+            try:
+                url = supplier.frame_for(index, prompt, previous_clip)
+            except Exception as exc:
+                print(
+                    f"[VideoProducer]   shot {index+1} supplier failed ({exc}) "
+                    f"— falling back to the shared reference",
+                    flush=True,
+                )
+                url = None
+            if url:
+                print(f"[VideoProducer]   shot {index+1} anchor: chained storyboard", flush=True)
+                return url
+
+        if storyboard_urls and index < len(storyboard_urls) and storyboard_urls[index]:
+            print(f"[VideoProducer]   shot {index+1} anchor: per-shot storyboard", flush=True)
+            return storyboard_urls[index]
+
+        if reference_image_url:
+            print(f"[VideoProducer]   shot {index+1} anchor: shared locked ref", flush=True)
+        return reference_image_url
 
     def _get_title_card(self):
         """Resolve the active preset's title card (built once, cached forever)."""

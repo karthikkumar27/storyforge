@@ -103,3 +103,45 @@ def test_edit_image_does_not_prepend_the_safe_prefix():
     AtlasImageGenerator(client).edit_image("https://cdn/alan.png", "he turns")
 
     assert all(SAFE_PREFIX not in call["body"]["prompt"] for call in client.calls)
+
+
+def test_edit_accepts_a_list_of_base_images_in_order():
+    """Chained storyboards pass [locked_reference, previous_frame]. Order is the
+    identity-authority signal, so it must survive to the request body."""
+    from modules.image_generator import AtlasImageGenerator
+    from tests.support import StubAtlasClient
+    client = StubAtlasClient(outputs=["https://cdn/sb.png"])
+
+    AtlasImageGenerator(client).edit_image(
+        ["https://cdn/ref.png", "data:image/png;base64,AAAA"], "a rooftop"
+    )
+
+    assert client.calls[0]["body"]["image"] == [
+        "https://cdn/ref.png", "data:image/png;base64,AAAA",
+    ]
+
+
+def test_edit_still_accepts_a_single_base_image():
+    from modules.image_generator import AtlasImageGenerator
+    from tests.support import StubAtlasClient
+    client = StubAtlasClient(outputs=["https://cdn/sb.png"])
+
+    AtlasImageGenerator(client).edit_image("https://cdn/ref.png", "a rooftop")
+
+    assert client.calls[0]["body"]["image"] == "https://cdn/ref.png"
+
+
+def test_edit_logs_a_readable_base_for_a_data_uri():
+    """A base64 data URI is ~300KB; logging it raw floods the pipeline output."""
+    from modules.image_generator import AtlasImageGenerator
+    from tests.support import StubAtlasClient
+    import io, contextlib
+    client = StubAtlasClient(outputs=["https://cdn/sb.png"])
+
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        AtlasImageGenerator(client).edit_image(
+            ["https://cdn/ref.png", "data:image/png;base64," + "A" * 5000], "x"
+        )
+
+    assert len(buffer.getvalue()) < 2000

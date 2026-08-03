@@ -132,6 +132,31 @@ class CharactersReader:
             return transformed or normal or None
         return normal or transformed or None
 
+    def get_main_appearance_for_form(self, character_form: str) -> str | None:
+        """Return the locked appearance paragraph for the main character matching
+        the requested form ("normal" | "transformed" | "both").
+
+        Deliberately mirrors get_main_ref_image_for_form's selection logic. The
+        episode's character_form already chooses the reference image; it must
+        choose the matching words, or the prompt describes Alan while the image
+        shows Zenith.
+
+        Selection logic:
+        - "transformed" or "both" → appearance_transformed if set, else appearance_normal
+        - "normal" or anything else → appearance_normal if set, else appearance_transformed
+        - None if neither is set (signals the caller to inject no appearance)
+        """
+        main = self.get_main_character()
+        if not main:
+            return None
+        normal = str(main.get("appearance_normal", "")).strip()
+        transformed = str(main.get("appearance_transformed", "")).strip()
+
+        form = (character_form or "").strip().lower()
+        if form in ("transformed", "both"):
+            return transformed or normal or None
+        return normal or transformed or None
+
 
 def format_characters_context(
     arc_number: int,

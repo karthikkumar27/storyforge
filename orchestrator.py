@@ -20,7 +20,7 @@ from modules.video_producer import (
     AtlasSeedance1_5T2VFastProducer,
 )
 from modules.audio_mixer import AudioMixer
-from modules.storyboard import build_storyboards
+from modules.storyboard import build_storyboards, ChainedStoryboards
 from modules.youtube_uploader import YouTubeUploader
 
 
@@ -52,6 +52,7 @@ class Deps:
     image_generator: Callable[[], Any] = create_image_generator
     atlas_image_generator: Callable[[], Any] = AtlasImageGenerator
     storyboards: Callable[..., list] = build_storyboards
+    chained_storyboards: Callable[..., Any] = ChainedStoryboards
     video_producer: Callable[[], Any] = create_video_producer
     audio_mixer: Callable[[], Any] = AudioMixer
     uploader: Callable[[], Any] = YouTubeUploader
@@ -250,7 +251,12 @@ def run_pipeline(deps: Deps | None = None) -> dict:
             else:
                 print(f"[Pipeline] Preset-7 character_form={form} but no locked ref image yet — will generate fresh", flush=True)
 
-        # Reuse reference image from Part 1 if this is a series continuation (other presets)
+        # Reuse reference image from Part 1 if this is a series continuation
+        # (other presets). The words that describe that image live on the
+        # SAME earlier, completed row — not the current, still-pending one —
+        # so they travel together into `series_appearance` and feed the
+        # priority chain below as this run's saved value.
+        series_appearance: str | None = None
         if not ref_image_url and STORY_MODE == "series":
             series_id = ledger.latest_incomplete_series()
             if series_id:
@@ -259,6 +265,7 @@ def run_pipeline(deps: Deps | None = None) -> dict:
                     url = part.get("ref_image_url", "")
                     if url:
                         ref_image_url = url
+                        series_appearance = str(part.get("character_appearance", "")).strip() or None
                         print(f"[Pipeline] Reusing reference image from Part {part.get('part_number', '?')}", flush=True)
                         break
 
@@ -267,33 +274,81 @@ def run_pipeline(deps: Deps | None = None) -> dict:
             ref_image_url = _preset.default_ref_image
             print(f"[Pipeline] Using preset default reference image", flush=True)
 
-        # Generate new reference image only if we don't have one
+        # Generate new reference image only if we don't have one. Track
+        # whether THIS run is the one that generated it — the prompt is only
+        # trustworthy as this image's appearance if it's the prompt that
+        # actually produced these pixels, not a fresh, non-deterministic
+        # rewrite from a rerun's ScriptGenerator call.
+        char_prompt = None
+        image_generated_this_run = False
         if not ref_image_url:
             char_prompt = script_result.get("character_image_prompt")
             if char_prompt:
                 ref_image_url = deps.image_generator().generate(char_prompt)
+                image_generated_this_run = True
                 print("[Pipeline] New reference image generated", flush=True)
 
-        # Save reference image URL to sheet for future parts (buffered)
+        # Save reference image URL to sheet for future parts (buffered). The
+        # prompt that produced it rides along in the same write, as
+        # character_appearance, only when this run generated the image — so
+        # the pair can never drift apart. A rerun that reuses a saved URL
+        # must read the words that actually match it, not whatever
+        # ScriptGenerator invents that day.
         if ref_image_url:
-            ledger.record(row_index, ref_image_url=ref_image_url)
+            if image_generated_this_run:
+                ledger.record(row_index, ref_image_url=ref_image_url, character_appearance=char_prompt)
+            else:
+                ledger.record(row_index, ref_image_url=ref_image_url)
 
-        # Premium: per-shot storyboard generation. Opt-in per preset via
+        # Per-shot storyboard generation. Opt-in per preset via
         # `per_shot_storyboards: True` in config. For each shot, GPT Image 2
         # Edit takes the reference image as the base and the shot's scene
         # description as the prompt, producing a shot-appropriate first frame
         # that preserves the character's identity. Solves wallpaper-effect
         # and character drift across shots.
+        #
+        # With `chain_reference_frames: True` the storyboards are generated
+        # lazily, one per shot, each also seeing the previous shot's last
+        # frame — so identity carries forward from what actually rendered.
+
+        # The locked appearance, in words. The reference image alone loses the
+        # costume: the edit prompt describes the scene richly and the character
+        # only in pixels, and the model resolves that conflict toward the text.
+        # The rule is one sentence: use the words that describe the image
+        # actually in hand. Priority: the canon locked paragraph (form-aware,
+        # beats everything); else, if THIS run generated the reference image,
+        # the prompt that produced it — a fresh image always gets fresh
+        # words, never a saved description of a different, earlier image;
+        # else the appearance saved alongside whatever image IS in hand — the
+        # series part's, when the image was reused from an earlier part,
+        # otherwise this row's own saved value.
+        appearance: str | None = None
+        if _preset.serialized_canon:
+            appearance = chars.get_main_appearance_for_form(form)
+        if not appearance and image_generated_this_run:
+            appearance = char_prompt
+        if not appearance:
+            appearance = series_appearance or (str(episode.character_appearance).strip() or None)
+
         storyboard_urls: list[str | None] | None = None
+        storyboard_supplier = None
         if _preset.per_shot_storyboards and ref_image_url:
-            storyboard_urls = deps.storyboards(
-                script_result["shots"], ref_image_url, style=VIDEO_STYLE,
-            )
+            if _preset.chain_reference_frames:
+                storyboard_supplier = deps.chained_storyboards(
+                    ref_image_url, style=VIDEO_STYLE, appearance=appearance,
+                )
+                print("[Pipeline] Chained storyboards enabled", flush=True)
+            else:
+                storyboard_urls = deps.storyboards(
+                    script_result["shots"], ref_image_url,
+                    style=VIDEO_STYLE, appearance=appearance,
+                )
 
         video_path = deps.video_producer().produce(
             script_result["shots"],
             reference_image_url=ref_image_url,
             storyboard_urls=storyboard_urls,
+            storyboard_supplier=storyboard_supplier,
         )
 
         # Audio mix routing:

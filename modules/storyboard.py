@@ -29,11 +29,17 @@ from __future__ import annotations
 
 from typing import Callable, Protocol
 
+from modules.frame_chain import (
+    extract_last_frame,
+    portrait_anchor,
+    to_data_uri,
+)
+
 
 class ImageEditor(Protocol):
     """The one thing a storyboard generator needs: edit a base image."""
 
-    def edit_image(self, base_image_url: str, prompt: str) -> str:
+    def edit_image(self, base_image_url: str | list[str], prompt: str) -> str:
         ...
 
 
@@ -56,8 +62,37 @@ def character_is_absent(shot_prompt: str) -> bool:
     return any(marker in lowered for marker in CHARACTER_ABSENT_MARKERS)
 
 
-def build_edit_prompt(shot_prompt: str, style: str) -> str:
-    """The instruction handed to GPT Image 2 Edit for one shot."""
+def _appearance_block(appearance: str) -> str:
+    """The locked character description, stated as an overriding instruction.
+
+    This exists because of a measured failure: the edit prompt described the
+    scene in rich language and the character only in pixels, and probing
+    established that when the image and the text disagree, the TEXT wins. So the
+    character loses its costume to whatever the scene implies. Describing the
+    character in words too — first, and marked authoritative — puts it back on
+    equal footing.
+
+    Placement is load-bearing, not cosmetic: this goes ahead of the
+    reference-image and style instructions, not appended after the scene.
+    """
+    return (
+        f"THE CHARACTER ALWAYS LOOKS EXACTLY LIKE THIS, in every shot, regardless "
+        f"of what the scene describes: {appearance} "
+        f"This description is the AUTHORITY on the character's face, hair, clothing "
+        f"and accessories. The scene below says what happens and where — it does NOT "
+        f"change how the character looks. If the scene implies different clothing, "
+        f"ignore that and keep the description above. "
+    )
+
+
+def build_edit_prompt(
+    shot_prompt: str, style: str, appearance: str | None = None
+) -> str:
+    """The instruction handed to GPT Image 2 Edit for one shot.
+
+    `appearance` is the locked character description in words. It is omitted for
+    character-absent shots, where there is no character in frame to describe.
+    """
     if character_is_absent(shot_prompt):
         return (
             f"Use the reference image as a STYLE anchor only — preserve the {style} "
@@ -67,7 +102,9 @@ def build_edit_prompt(shot_prompt: str, style: str) -> str:
             f"prompt describes, as a 9:16 vertical still frame at the START of the action, "
             f"no motion blur. Scene: {shot_prompt}"
         )
+    lead = _appearance_block(appearance.strip()) if appearance and appearance.strip() else ""
     return (
+        f"{lead}"
         f"Use the reference image as the base — preserve the main character's face, "
         f"hair, outfit, and {style} style exactly. Render this scene as a 9:16 "
         f"vertical still frame at the START of the action, no motion blur. If the shot "
@@ -82,6 +119,7 @@ def build_storyboards(
     reference_image_url: str,
     *,
     style: str,
+    appearance: str | None = None,
     generator: ImageEditor | None = None,
     log: Callable[[str], None] | None = None,
 ) -> list[str | None]:
@@ -100,7 +138,7 @@ def build_storyboards(
     emit(f"[Storyboard] Generating {len(shots)} per-shot storyboards...")
     storyboards: list[str | None] = []
     for i, shot_prompt in enumerate(shots, start=1):
-        prompt = build_edit_prompt(shot_prompt, style)
+        prompt = build_edit_prompt(shot_prompt, style, appearance)
         try:
             storyboards.append(generator.edit_image(reference_image_url, prompt))
             emit(f"[Storyboard]   shot {i}/{len(shots)} ✓")
@@ -111,3 +149,106 @@ def build_storyboards(
             )
             storyboards.append(None)
     return storyboards
+
+
+def build_continuity_prompt(
+    shot_prompt: str, style: str, appearance: str | None = None
+) -> str:
+    """The instruction for a two-base edit.
+
+    Probing showed the model resolves conflicts toward the TEXT, so precedence
+    between the two images has to be stated rather than implied — and so the
+    locked appearance, when supplied, is stated in text rather than left to the
+    reference image's pixels.
+    """
+    if character_is_absent(shot_prompt):
+        return (
+            f"You are given two images. The FIRST is a STYLE anchor — preserve the "
+            f"{style} illustration style, colour palette and world from it. The SECOND "
+            f"is the final moment of the previous shot — match its lighting, weather "
+            f"and time of day so the two shots feel continuous. The main character "
+            f"should NOT be in frame for this shot (it is a POV, wide-exterior, or "
+            f"environmental shot). Render the scene as a 9:16 vertical still frame at "
+            f"the START of the action, no motion blur. Scene: {shot_prompt}"
+        )
+    lead = _appearance_block(appearance.strip()) if appearance and appearance.strip() else ""
+    return (
+        f"{lead}"
+        f"You are given two images. The FIRST image is the authority on WHO the "
+        f"character is — preserve their face, hair, eye colour, outfit and the {style} "
+        f"style from it exactly. The SECOND image is the final moment of the previous "
+        f"shot — use it for continuity of lighting, weather, wardrobe state and where "
+        f"other characters are standing, and keep any second character looking exactly "
+        f"as they do there. Where the two images disagree about the main character's "
+        f"appearance, the FIRST image wins. Render this scene as a 9:16 vertical still "
+        f"frame at the START of the action, no motion blur. Scene: {shot_prompt}"
+    )
+
+
+class ChainedStoryboards:
+    """A StoryboardSupplier that carries the previous shot's last frame forward.
+
+    Shot 1 is edited from the Reference Image alone. Every shot after it is
+    edited from [Reference Image, previous shot's last frame] -- so identity is
+    re-anchored to the reference on every shot rather than drifting forward,
+    while continuity still flows from what actually rendered.
+
+    Extraction lives here rather than in the video producer so the producer
+    never learns about ffmpeg or data URIs: it hands over a clip path and gets
+    back a first frame.
+    """
+
+    def __init__(
+        self,
+        reference_image_url: str,
+        *,
+        style: str,
+        appearance: str | None = None,
+        generator: ImageEditor | None = None,
+        log: Callable[[str], None] | None = None,
+    ):
+        if generator is None:
+            from modules.image_generator import AtlasImageGenerator
+            generator = AtlasImageGenerator()
+        self._reference = reference_image_url
+        self._style = style
+        self._appearance = appearance
+        self._generator = generator
+        self._log = log or (lambda message: print(message, flush=True))
+
+    def frame_for(
+        self, index: int, shot_prompt: str, previous_clip: str | None
+    ) -> str | None:
+        """The first-frame still for one shot, or None to fall back."""
+        bases: str | list[str] = self._reference
+        prompt = build_edit_prompt(shot_prompt, self._style, self._appearance)
+
+        if previous_clip:
+            try:
+                frame = extract_last_frame(previous_clip)
+                bases = [self._reference, to_data_uri(frame)]
+                prompt = build_continuity_prompt(shot_prompt, self._style, self._appearance)
+                self._log(f"[Storyboard]   shot {index + 1} chained to the previous frame")
+            # Broad on purpose: extract_last_frame raises FrameExtractionError,
+            # but to_data_uri shells out to ffmpeg with check=True, and
+            # CalledProcessError is NOT an OSError. Anything that goes wrong
+            # here costs continuity for one shot, never the episode.
+            except Exception as exc:
+                self._log(
+                    f"[Storyboard]   shot {index + 1} could not chain ({exc}) "
+                    f"— using the locked reference alone"
+                )
+
+        try:
+            url = self._generator.edit_image(bases, prompt)
+        except Exception as exc:
+            self._log(
+                f"[Storyboard]   shot {index + 1} FAILED ({exc}) "
+                f"— falling back to the locked reference"
+            )
+            return None
+
+        # Measured, not trusted: a two-base edit silently returns landscape.
+        anchor = portrait_anchor(url)
+        self._log(f"[Storyboard]   shot {index + 1} ✓")
+        return anchor

@@ -51,6 +51,11 @@ class Preset:
 
     # -- optional feature configuration --------------------------------------
     per_shot_storyboards: bool = False
+    # Per-shot storyboards, but each one also sees the PREVIOUS shot's last
+    # frame -- so character identity carries forward from what actually
+    # rendered instead of being re-derived from the reference every time.
+    # Requires per_shot_storyboards.
+    chain_reference_frames: bool = False
     made_for_kids: bool = False
     youtube_hashtags: tuple[str, ...] = ()
     default_ref_image: str | None = None
@@ -117,7 +122,24 @@ class Preset:
 
 
 def from_raw(key: str, raw: dict) -> Preset:
-    """Build a Preset from one entry of config.PRESETS."""
+    """Build a Preset from one entry of config.PRESETS.
+
+    Raises ValueError on a configuration that would fail silently and
+    expensively at runtime rather than loudly here.
+    """
+    per_shot_storyboards = bool(raw.get("per_shot_storyboards", False))
+    chain_reference_frames = bool(raw.get("chain_reference_frames", False))
+    if chain_reference_frames and not per_shot_storyboards:
+        # The orchestrator gates ALL storyboard work on per_shot_storyboards,
+        # so this combination produces no storyboards at all and anchors every
+        # shot to one shared reference — the exact drift chaining exists to
+        # fix, at a full episode's video spend, with nothing logged.
+        raise ValueError(
+            f"{key}: chain_reference_frames requires per_shot_storyboards. "
+            f"Chaining supplies the per-shot storyboards; without that "
+            f"capability the pipeline generates none and every shot falls "
+            f"back to the shared reference image."
+        )
     return Preset(
         key=key,
         name=raw["name"],
@@ -135,7 +157,8 @@ def from_raw(key: str, raw: dict) -> Preset:
         youtube_title_template=raw.get("youtube_title_template"),
         episode_sheet_env=raw.get("episode_sheet_env"),
         ending_style=raw.get("ending_style", "complete"),
-        per_shot_storyboards=bool(raw.get("per_shot_storyboards", False)),
+        per_shot_storyboards=per_shot_storyboards,
+        chain_reference_frames=chain_reference_frames,
         made_for_kids=bool(raw.get("made_for_kids", False)),
         youtube_hashtags=tuple(raw.get("youtube_hashtags") or ()),
         default_ref_image=raw.get("default_ref_image"),
