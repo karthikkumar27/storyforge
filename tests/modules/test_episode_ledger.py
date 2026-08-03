@@ -9,6 +9,7 @@ HEADERS = [
     "title", "story_brief", "script_text", "ref_image_url", "genre", "series_id",
     "part_number", "story_mode", "duration_sec", "status", "youtube_url",
     "error_msg", "arc_number", "episode_number", "character_form",
+    "character_appearance",
 ]
 
 SERIES_SPEC = LedgerSpec(
@@ -297,6 +298,54 @@ def test_record_with_nothing_to_say_does_nothing():
     ledger.record(2)
 
     assert raw.write_batches == 0
+
+
+# -- character appearance ------------------------------------------------------
+#
+# The word-pair to a saved reference image. Stored beside the image so the two
+# can never drift apart on a rerun -- see orchestrator.py's priority chain.
+
+def test_start_adds_the_character_appearance_column_when_missing():
+    raw = CountingSheet([], headers=["title", "story_brief", "genre", "status"])
+    ledger = EpisodeLedger(SheetTab(raw), SERIES_SPEC)
+
+    ledger.start({"story_brief": "b", "genre": "sci-fi"})
+
+    headers, _records = raw.read_all()
+    assert "character_appearance" in headers
+
+
+def test_record_writes_the_character_appearance_cell():
+    ledger, raw = _ledger([_row(story_brief="b", status="pending")])
+
+    ledger.record(2, character_appearance="A knight in silver armor")
+    ledger.record(2, status="uploading")
+
+    _, records = raw.read_all()
+    assert records[0]["character_appearance"] == "A knight in silver armor"
+
+
+def test_claim_next_reads_back_the_saved_character_appearance():
+    ledger, _ = _ledger([
+        _row(story_brief="b", status="pending",
+             character_appearance="Locked paragraph from a prior run"),
+    ])
+
+    episode = ledger.claim_next().episode
+
+    assert episode.character_appearance == "Locked paragraph from a prior run"
+
+
+def test_record_without_character_appearance_leaves_the_cell_untouched():
+    ledger, raw = _ledger([
+        _row(story_brief="b", status="pending", character_appearance="original"),
+    ])
+
+    ledger.record(2, script="narration")
+    ledger.record(2, status="uploading")
+
+    _, records = raw.read_all()
+    assert records[0]["character_appearance"] == "original"
 
 
 def test_finish_publishes_immediately():

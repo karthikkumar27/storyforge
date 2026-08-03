@@ -121,6 +121,10 @@ def main():
     story_brief = str(row.get("story_brief", "")).strip()
     genre = str(row.get("genre", "")).strip() or "manual"
     ref_image_url = str(row.get("ref_image_url", "")).strip()
+    # Saved alongside ref_image_url by an earlier run that generated it, so
+    # the pair can never drift apart on a rerun -- see the priority chain
+    # around step 2 below.
+    saved_appearance = str(row.get("character_appearance", "")).strip()
 
     if not story_brief:
         raise SystemExit(f"Row {row_idx} has no story_brief. Add one and re-run.")
@@ -181,10 +185,13 @@ def main():
         print(f"      → {len(shots)} shots produced")
 
     # ===== 2. Resolve reference image =====
-    # char_prompt doubles as the locked "appearance" text for storyboard
-    # generation below — it must be bound on every path that reaches step 3,
-    # not just the one that generates a fresh reference image.
+    # char_prompt is only trustworthy as this image's appearance when THIS
+    # run is the one that used it to generate the reference image below --
+    # a rerun's ScriptGenerator call is non-deterministic and must never be
+    # paired with an image an earlier run saved. See the priority chain
+    # after step 3.
     char_prompt = None
+    image_generated_this_run = False
     if not ref_image_url:
         print("\n[2/4] Generating reference image...")
         if inline_shots:
@@ -198,17 +205,24 @@ def main():
                 f"9:16 vertical reference for {genre} short film, cinematic, no text",
             )
         ref_image_url = AtlasImageGenerator().generate(char_prompt)
-        # Write back immediately so a rerun reuses it rather than paying again.
+        image_generated_this_run = True
+        # Write back immediately so a rerun reuses it rather than paying
+        # again. The prompt that produced it rides along in the same write,
+        # as character_appearance, so the pair can never drift apart.
         try:
-            ledger.record(row_idx, ref_image_url=ref_image_url)
+            ledger.record(row_idx, ref_image_url=ref_image_url, character_appearance=char_prompt)
             session.flush()
         except Exception as exc:
             print(f"      (could not save ref image to sheet: {exc})")
         print(f"      → {ref_image_url[:80]}...")
     else:
         print("\n[2/4] Using existing ref_image_url from sheet")
-        if not inline_shots:
-            char_prompt = script_result.get("character_image_prompt")
+
+    # The locked appearance passed to the storyboard builders below.
+    # Priority: the sheet's saved pairing, which matches ref_image_url by
+    # construction; else the prompt that generated a reference image THIS
+    # run; else nothing.
+    appearance = saved_appearance or (char_prompt if image_generated_this_run else None)
 
     # ===== 3. Per-shot storyboards (optional) =====
     storyboard_urls = None
@@ -216,12 +230,12 @@ def main():
     if args.chain:
         print("\n[3/4] Chained storyboards — each shot sees the previous frame")
         storyboard_supplier = ChainedStoryboards(
-            ref_image_url, style=VIDEO_STYLE, appearance=char_prompt,
+            ref_image_url, style=VIDEO_STYLE, appearance=appearance,
         )
     elif not args.no_storyboards:
         print("\n[3/4] Generating per-shot storyboards...")
         storyboard_urls = build_storyboards(
-            shots, ref_image_url, style=VIDEO_STYLE, appearance=char_prompt,
+            shots, ref_image_url, style=VIDEO_STYLE, appearance=appearance,
         )
     else:
         print("\n[3/4] Skipping per-shot storyboards (--no-storyboards)")

@@ -268,16 +268,31 @@ def run_pipeline(deps: Deps | None = None) -> dict:
             ref_image_url = _preset.default_ref_image
             print(f"[Pipeline] Using preset default reference image", flush=True)
 
-        # Generate new reference image only if we don't have one
+        # Generate new reference image only if we don't have one. Track
+        # whether THIS run is the one that generated it — the prompt is only
+        # trustworthy as this image's appearance if it's the prompt that
+        # actually produced these pixels, not a fresh, non-deterministic
+        # rewrite from a rerun's ScriptGenerator call.
+        char_prompt = None
+        image_generated_this_run = False
         if not ref_image_url:
             char_prompt = script_result.get("character_image_prompt")
             if char_prompt:
                 ref_image_url = deps.image_generator().generate(char_prompt)
+                image_generated_this_run = True
                 print("[Pipeline] New reference image generated", flush=True)
 
-        # Save reference image URL to sheet for future parts (buffered)
+        # Save reference image URL to sheet for future parts (buffered). The
+        # prompt that produced it rides along in the same write, as
+        # character_appearance, only when this run generated the image — so
+        # the pair can never drift apart. A rerun that reuses a saved URL
+        # must read the words that actually match it, not whatever
+        # ScriptGenerator invents that day.
         if ref_image_url:
-            ledger.record(row_index, ref_image_url=ref_image_url)
+            if image_generated_this_run:
+                ledger.record(row_index, ref_image_url=ref_image_url, character_appearance=char_prompt)
+            else:
+                ledger.record(row_index, ref_image_url=ref_image_url)
 
         # Per-shot storyboard generation. Opt-in per preset via
         # `per_shot_storyboards: True` in config. For each shot, GPT Image 2
@@ -289,18 +304,23 @@ def run_pipeline(deps: Deps | None = None) -> dict:
         # With `chain_reference_frames: True` the storyboards are generated
         # lazily, one per shot, each also seeing the previous shot's last
         # frame — so identity carries forward from what actually rendered.
+
         # The locked appearance, in words. The reference image alone loses the
         # costume: the edit prompt describes the scene richly and the character
         # only in pixels, and the model resolves that conflict toward the text.
-        # Canon presets have a locked paragraph on the characters sheet; the
-        # rest have the prompt that generated their reference image.
+        # Priority: the canon locked paragraph (form-aware, beats everything);
+        # else this episode's saved character_appearance, which by
+        # construction matches whatever ref_image_url is already on this row;
+        # else the prompt that generated a reference image THIS run — never
+        # a fresh prompt paired with an image an earlier, non-deterministic
+        # run saved.
         appearance: str | None = None
         if _preset.serialized_canon:
-            appearance = deps.characters(session).get_main_appearance_for_form(
-                str(episode.character_form).strip().lower() or "normal"
-            )
+            appearance = chars.get_main_appearance_for_form(form)
         if not appearance:
-            appearance = script_result.get("character_image_prompt")
+            appearance = str(episode.character_appearance).strip() or None
+        if not appearance and image_generated_this_run:
+            appearance = char_prompt
 
         storyboard_urls: list[str | None] | None = None
         storyboard_supplier = None

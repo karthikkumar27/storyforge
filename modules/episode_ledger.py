@@ -54,6 +54,7 @@ class Episode:
     episode_number: str = ""
     character_form: str = ""
     ref_image_url: str = ""
+    character_appearance: str = ""
 
 
 @dataclass(frozen=True)
@@ -89,6 +90,7 @@ class Claim:
 _WRITE_COLUMNS = {
     "script": "script_text",
     "ref_image_url": "ref_image_url",
+    "character_appearance": "character_appearance",
     "status": "status",
     "youtube_url": "youtube_url",
     "error_msg": "error_msg",
@@ -129,6 +131,7 @@ class EpisodeLedger:
         *,
         script: str | None = None,
         ref_image_url: str | None = None,
+        character_appearance: str | None = None,
         status: str | None = None,
     ) -> None:
         """Note progress against an Episode.
@@ -143,6 +146,8 @@ class EpisodeLedger:
             values[_WRITE_COLUMNS["script"]] = script
         if ref_image_url is not None:
             values[_WRITE_COLUMNS["ref_image_url"]] = ref_image_url
+        if character_appearance is not None:
+            values[_WRITE_COLUMNS["character_appearance"]] = character_appearance
         if status is not None:
             values[_WRITE_COLUMNS["status"]] = status
         if not values:
@@ -214,6 +219,7 @@ class EpisodeLedger:
                     episode_number=row.get("episode_number", ""),
                     character_form=row.get("character_form", ""),
                     ref_image_url=row.get("ref_image_url", ""),
+                    character_appearance=row.get("character_appearance", ""),
                 )
         return None
 
@@ -303,7 +309,9 @@ class EpisodeLedger:
         return max_ep + 1
 
     def _append_pending(self, brief: dict) -> None:
-        self._tab.ensure_columns("arc_number", "episode_number", "character_form")
+        self._tab.ensure_columns(
+            "arc_number", "episode_number", "character_form", "character_appearance",
+        )
         field_map = {
             "title_hint": "title",
             "story_brief": "story_brief",
