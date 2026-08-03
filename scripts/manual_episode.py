@@ -181,6 +181,10 @@ def main():
         print(f"      → {len(shots)} shots produced")
 
     # ===== 2. Resolve reference image =====
+    # char_prompt doubles as the locked "appearance" text for storyboard
+    # generation below — it must be bound on every path that reaches step 3,
+    # not just the one that generates a fresh reference image.
+    char_prompt = None
     if not ref_image_url:
         print("\n[2/4] Generating reference image...")
         if inline_shots:
@@ -203,16 +207,22 @@ def main():
         print(f"      → {ref_image_url[:80]}...")
     else:
         print("\n[2/4] Using existing ref_image_url from sheet")
+        if not inline_shots:
+            char_prompt = script_result.get("character_image_prompt")
 
     # ===== 3. Per-shot storyboards (optional) =====
     storyboard_urls = None
     storyboard_supplier = None
     if args.chain:
         print("\n[3/4] Chained storyboards — each shot sees the previous frame")
-        storyboard_supplier = ChainedStoryboards(ref_image_url, style=VIDEO_STYLE)
+        storyboard_supplier = ChainedStoryboards(
+            ref_image_url, style=VIDEO_STYLE, appearance=char_prompt,
+        )
     elif not args.no_storyboards:
         print("\n[3/4] Generating per-shot storyboards...")
-        storyboard_urls = build_storyboards(shots, ref_image_url, style=VIDEO_STYLE)
+        storyboard_urls = build_storyboards(
+            shots, ref_image_url, style=VIDEO_STYLE, appearance=char_prompt,
+        )
     else:
         print("\n[3/4] Skipping per-shot storyboards (--no-storyboards)")
 

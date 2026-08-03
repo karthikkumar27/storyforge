@@ -118,6 +118,9 @@ class FakeCharactersReader:
     def get_main_ref_image_for_form(self, form):
         return None
 
+    def get_main_appearance_for_form(self, form):
+        return None
+
 
 def _deps(rows, *, headers=HEADERS, brief=None, script=None, uploader=None, **overrides):
     """Real ledger over an in-memory sheet, fakes for everything that costs money."""
@@ -416,3 +419,142 @@ def test_a_non_chaining_preset_still_builds_storyboards_up_front(monkeypatch):
     assert kwargs["storyboard_urls"] == [
         "https://cdn/sb0.png", "https://cdn/sb1.png", "https://cdn/sb2.png",
     ]
+
+
+# -- the locked appearance reaches the storyboard builders --------------------
+
+@requires_shot_pipeline
+def test_a_canon_preset_takes_the_appearance_from_the_characters_sheet(monkeypatch):
+    """preset-7's locked paragraph is canon and stable across 200 episodes, so
+    it beats the per-episode character_image_prompt."""
+    import orchestrator
+    monkeypatch.setattr(
+        orchestrator, "_preset",
+        replace(
+            orchestrator._preset,
+            serialized_canon=True,
+            per_shot_storyboards=True,
+            chain_reference_frames=False,
+        ),
+    )
+
+    class Chars:
+        available = True
+        def __call__(self, session):
+            return self
+        def get_main_ref_image_for_form(self, form):
+            return "https://cdn/zenith.png"
+        def get_main_appearance_for_form(self, form):
+            return "LOCKED PARAGRAPH FROM THE SHEET"
+
+    seen = {}
+    deps, _ = _deps(
+        [_row(story_brief="b", status="pending")],
+        script=FakeGenerator({**SCRIPT_RESULT,
+                              "character_image_prompt": "GENERATED CHARACTER PROMPT"}),
+        characters=Chars(),
+        storyboards=lambda shots, ref, **kw: seen.update(kw) or [None] * len(shots),
+        chained_storyboards=_explodes("the chained storyboard supplier"),
+    )
+
+    run_pipeline(deps)
+
+    assert seen["appearance"] == "LOCKED PARAGRAPH FROM THE SHEET"
+
+
+@requires_shot_pipeline
+def test_a_non_canon_preset_takes_the_appearance_from_the_script(monkeypatch):
+    import orchestrator
+    monkeypatch.setattr(
+        orchestrator, "_preset",
+        replace(
+            orchestrator._preset,
+            serialized_canon=False,
+            per_shot_storyboards=True,
+            chain_reference_frames=False,
+            default_ref_image="https://cdn/ref.png",
+        ),
+    )
+    seen = {}
+    deps, _ = _deps(
+        [_row(story_brief="b", status="pending")],
+        script=FakeGenerator({**SCRIPT_RESULT,
+                              "character_image_prompt": "GENERATED CHARACTER PROMPT"}),
+        storyboards=lambda shots, ref, **kw: seen.update(kw) or [None] * len(shots),
+        chained_storyboards=_explodes("the chained storyboard supplier"),
+    )
+
+    run_pipeline(deps)
+
+    assert seen["appearance"] == "GENERATED CHARACTER PROMPT"
+
+
+@requires_shot_pipeline
+def test_a_canon_preset_falls_back_to_the_script_when_the_sheet_is_empty(monkeypatch):
+    """A roster row with no appearance paragraph must not blank the prompt."""
+    import orchestrator
+    monkeypatch.setattr(
+        orchestrator, "_preset",
+        replace(
+            orchestrator._preset,
+            serialized_canon=True,
+            per_shot_storyboards=True,
+            chain_reference_frames=False,
+            default_ref_image="https://cdn/ref.png",
+        ),
+    )
+
+    class EmptyChars:
+        available = True
+        def __call__(self, session):
+            return self
+        def get_main_ref_image_for_form(self, form):
+            return None
+        def get_main_appearance_for_form(self, form):
+            return None
+
+    seen = {}
+    deps, _ = _deps(
+        [_row(story_brief="b", status="pending")],
+        script=FakeGenerator({**SCRIPT_RESULT,
+                              "character_image_prompt": "GENERATED CHARACTER PROMPT"}),
+        characters=EmptyChars(),
+        storyboards=lambda shots, ref, **kw: seen.update(kw) or [None] * len(shots),
+        chained_storyboards=_explodes("the chained storyboard supplier"),
+    )
+
+    run_pipeline(deps)
+
+    assert seen["appearance"] == "GENERATED CHARACTER PROMPT"
+
+
+@requires_shot_pipeline
+def test_a_chaining_preset_also_receives_the_appearance(monkeypatch):
+    import orchestrator
+    monkeypatch.setattr(
+        orchestrator, "_preset",
+        replace(
+            orchestrator._preset,
+            serialized_canon=False,
+            per_shot_storyboards=True,
+            chain_reference_frames=True,
+            default_ref_image="https://cdn/ref.png",
+        ),
+    )
+    seen = {}
+
+    class SpySupplier:
+        def frame_for(self, index, shot_prompt, previous_clip):
+            return None
+
+    deps, _ = _deps(
+        [_row(story_brief="b", status="pending")],
+        script=FakeGenerator({**SCRIPT_RESULT,
+                              "character_image_prompt": "GENERATED CHARACTER PROMPT"}),
+        storyboards=_explodes("the batch storyboard builder"),
+        chained_storyboards=lambda ref, **kw: seen.update(kw) or SpySupplier(),
+    )
+
+    run_pipeline(deps)
+
+    assert seen["appearance"] == "GENERATED CHARACTER PROMPT"

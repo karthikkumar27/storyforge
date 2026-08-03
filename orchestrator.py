@@ -289,17 +289,31 @@ def run_pipeline(deps: Deps | None = None) -> dict:
         # With `chain_reference_frames: True` the storyboards are generated
         # lazily, one per shot, each also seeing the previous shot's last
         # frame — so identity carries forward from what actually rendered.
+        # The locked appearance, in words. The reference image alone loses the
+        # costume: the edit prompt describes the scene richly and the character
+        # only in pixels, and the model resolves that conflict toward the text.
+        # Canon presets have a locked paragraph on the characters sheet; the
+        # rest have the prompt that generated their reference image.
+        appearance: str | None = None
+        if _preset.serialized_canon:
+            appearance = deps.characters(session).get_main_appearance_for_form(
+                str(episode.character_form).strip().lower() or "normal"
+            )
+        if not appearance:
+            appearance = script_result.get("character_image_prompt")
+
         storyboard_urls: list[str | None] | None = None
         storyboard_supplier = None
         if _preset.per_shot_storyboards and ref_image_url:
             if _preset.chain_reference_frames:
                 storyboard_supplier = deps.chained_storyboards(
-                    ref_image_url, style=VIDEO_STYLE,
+                    ref_image_url, style=VIDEO_STYLE, appearance=appearance,
                 )
                 print("[Pipeline] Chained storyboards enabled", flush=True)
             else:
                 storyboard_urls = deps.storyboards(
-                    script_result["shots"], ref_image_url, style=VIDEO_STYLE,
+                    script_result["shots"], ref_image_url,
+                    style=VIDEO_STYLE, appearance=appearance,
                 )
 
         video_path = deps.video_producer().produce(
