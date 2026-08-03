@@ -115,11 +115,45 @@ already picks the image, and it must pick the matching words.
 
 ### 3.4 Wiring
 
-| Caller | Source |
-|---|---|
-| `orchestrator.py`, `serialized_canon` presets | `chars.get_main_appearance_for_form(form)` |
-| `orchestrator.py`, all other presets | `script_result.get("character_image_prompt")` |
-| `scripts/manual_episode.py` | the `character_image_prompt` it already computes for reference-image generation |
+**Amended 2026-08-03 after the Task 4 review — see §3.5.** The appearance and the
+reference image must be a *pair*; the priority chain below never injects a
+description that did not produce the image in hand.
+
+| Priority | Source | Why it is safe |
+|---|---|---|
+| 1 | `serialized_canon` presets: `chars.get_main_appearance_for_form(form)` | Canon locked pair — `ref_image_normal` and `appearance_normal` live in the same sheet row and cannot disagree |
+| 2 | The episode's saved `character_appearance` column | Written in the same call that saved `ref_image_url`, so it describes exactly that image |
+| 3 | This run's `character_image_prompt` — **only when this run generated the reference image** | Prompt and image are aligned by construction |
+| 4 | `None` | An un-described image is safer than a mis-described one |
+
+### 3.5 Why the pair must travel together
+
+The first draft of this design injected `character_image_prompt` whenever one
+was available. The Task 4 review found that this can *invert* the fix.
+
+`scripts/manual_episode.py` saves a generated reference image back to the sheet
+precisely so a rerun reuses it. On that rerun the script generator produces a
+**fresh** `character_image_prompt` — it is non-deterministic, so it may describe
+a different character. Injecting that text as the authority, ahead of the image,
+would let newly-invented words override the saved reference image that exists to
+keep the character stable. Before this feature, no text was injected and the
+image governed; the naive design would have made reruns *worse*. The same shape
+exists for series presets reusing Part 1's image.
+
+The remedy generalises what preset-7 already does. Its characters sheet stores
+`ref_image_normal` beside `appearance_normal` — a locked pair that cannot drift
+apart. Every other preset generated a prompt, made an image from it, saved the
+image, and discarded the words. So a new `character_appearance` column is
+written in the same `record()` call that saves `ref_image_url`, and read back
+whenever that image is reused.
+
+Consequence for the pipeline's one persistent artefact: of the six images a
+5-shot video generates (one reference, five storyboards), only the reference
+survives between runs. It is the sole carrier of identity, so whatever describes
+it must survive with it.
+
+Existing rows have an empty `character_appearance`. They fall to priority 4 —
+today's behaviour — rather than to a mismatched fresh prompt.
 
 No config flag. This is corrected behaviour, not an opt-in capability — it
 directly serves the character-consistency goal every affected preset already
