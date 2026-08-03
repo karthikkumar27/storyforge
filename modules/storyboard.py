@@ -119,6 +119,7 @@ def build_storyboards(
     reference_image_url: str,
     *,
     style: str,
+    appearance: str | None = None,
     generator: ImageEditor | None = None,
     log: Callable[[str], None] | None = None,
 ) -> list[str | None]:
@@ -137,7 +138,7 @@ def build_storyboards(
     emit(f"[Storyboard] Generating {len(shots)} per-shot storyboards...")
     storyboards: list[str | None] = []
     for i, shot_prompt in enumerate(shots, start=1):
-        prompt = build_edit_prompt(shot_prompt, style)
+        prompt = build_edit_prompt(shot_prompt, style, appearance)
         try:
             storyboards.append(generator.edit_image(reference_image_url, prompt))
             emit(f"[Storyboard]   shot {i}/{len(shots)} ✓")
@@ -202,6 +203,7 @@ class ChainedStoryboards:
         reference_image_url: str,
         *,
         style: str,
+        appearance: str | None = None,
         generator: ImageEditor | None = None,
         log: Callable[[str], None] | None = None,
     ):
@@ -210,6 +212,7 @@ class ChainedStoryboards:
             generator = AtlasImageGenerator()
         self._reference = reference_image_url
         self._style = style
+        self._appearance = appearance
         self._generator = generator
         self._log = log or (lambda message: print(message, flush=True))
 
@@ -218,13 +221,13 @@ class ChainedStoryboards:
     ) -> str | None:
         """The first-frame still for one shot, or None to fall back."""
         bases: str | list[str] = self._reference
-        prompt = build_edit_prompt(shot_prompt, self._style)
+        prompt = build_edit_prompt(shot_prompt, self._style, self._appearance)
 
         if previous_clip:
             try:
                 frame = extract_last_frame(previous_clip)
                 bases = [self._reference, to_data_uri(frame)]
-                prompt = build_continuity_prompt(shot_prompt, self._style)
+                prompt = build_continuity_prompt(shot_prompt, self._style, self._appearance)
                 self._log(f"[Storyboard]   shot {index + 1} chained to the previous frame")
             # Broad on purpose: extract_last_frame raises FrameExtractionError,
             # but to_data_uri shells out to ffmpeg with check=True, and

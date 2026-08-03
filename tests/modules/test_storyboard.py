@@ -448,3 +448,59 @@ def test_an_empty_appearance_is_treated_as_absent_in_the_continuity_prompt():
         assert build_continuity_prompt(
             "Sora wades", "anime", value
         ) == build_continuity_prompt("Sora wades", "anime")
+
+
+def test_build_storyboards_passes_the_appearance_to_every_shot():
+    editor = StubEditor()
+
+    build_storyboards(
+        ["Alan turns from the console", "She walks the corridor"],
+        "https://cdn/alan.png",
+        style="anime", appearance=APPEARANCE,
+        generator=editor, log=lambda _: None,
+    )
+
+    for _, prompt in editor.calls:
+        assert APPEARANCE in prompt
+
+
+def test_build_storyboards_without_an_appearance_is_unchanged():
+    with_none = StubEditor()
+    build_storyboards(
+        ["Alan turns from the console"], "https://cdn/alan.png",
+        style="anime", generator=with_none, log=lambda _: None,
+    )
+
+    assert APPEARANCE not in with_none.calls[0][1]
+    assert "always looks exactly like this" not in with_none.calls[0][1].lower()
+
+
+def test_chained_storyboards_injects_the_appearance_on_the_first_shot():
+    editor = ListEditor()
+    supplier = ChainedStoryboards(
+        "https://cdn/ref.png", style="anime", appearance=APPEARANCE,
+        generator=editor, log=lambda _: None,
+    )
+
+    supplier.frame_for(0, "Sora wades forward", None)
+
+    assert APPEARANCE in editor.calls[0][1]
+
+
+def test_chained_storyboards_injects_the_appearance_on_chained_shots(monkeypatch, tmp_path):
+    clip = tmp_path / "shot_00.mp4"
+    clip.write_bytes(b"fake")
+    monkeypatch.setattr("modules.storyboard.extract_last_frame", lambda path, **kw: str(clip))
+    monkeypatch.setattr("modules.storyboard.to_data_uri", lambda path, **kw: "data:image/png;base64,ZZZ")
+    editor = ListEditor()
+    supplier = ChainedStoryboards(
+        "https://cdn/ref.png", style="anime", appearance=APPEARANCE,
+        generator=editor, log=lambda _: None,
+    )
+
+    supplier.frame_for(1, "Sora shoves the figure", str(clip))
+
+    base, prompt = editor.calls[0]
+    assert base == ["https://cdn/ref.png", "data:image/png;base64,ZZZ"]
+    assert APPEARANCE in prompt
+    assert "two images" in prompt
