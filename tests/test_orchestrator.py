@@ -750,3 +750,63 @@ def test_a_canon_preset_beats_both_the_saved_appearance_and_the_fresh_prompt(mon
     run_pipeline(deps)
 
     assert seen["appearance"] == "CANON SENTINEL"
+
+
+@requires_shot_pipeline
+def test_a_series_continuation_takes_the_appearance_from_the_reused_parts_row(monkeypatch):
+    """The reused reference image comes from an earlier, COMPLETED row (Part
+    1). The words that describe it live in that row's character_appearance,
+    not the current, still-pending row's own -- which describes nothing
+    about the image actually reused here."""
+    import orchestrator
+    monkeypatch.setattr(
+        orchestrator, "_preset",
+        replace(
+            orchestrator._preset,
+            serialized_canon=False,
+            per_shot_storyboards=True,
+            chain_reference_frames=False,
+            default_ref_image=None,
+        ),
+    )
+    seen = {}
+    deps, _ = _deps(
+        [
+            _row(title="Part 1", story_brief="p1", genre=GENRES[0], status="done",
+                 series_id="s1", part_number=1, ref_image_url="https://cdn/part1.png",
+                 character_appearance="PART 1 SENTINEL"),
+            _row(title="Part 2", story_brief="p2", genre=GENRES[0], status="pending",
+                 series_id="s1", part_number=2, character_appearance="CURRENT ROW SENTINEL"),
+        ],
+        script=FakeGenerator({**SCRIPT_RESULT, "character_image_prompt": "SCRIPT SENTINEL"}),
+        storyboards=lambda shots, ref, **kw: seen.update(kw) or [None] * len(shots),
+        chained_storyboards=_explodes("the chained storyboard supplier"),
+    )
+
+    run_pipeline(deps)
+
+    assert seen["appearance"] == "PART 1 SENTINEL"
+
+
+@requires_shot_pipeline
+def test_a_fresh_generation_beats_a_stale_saved_appearance(monkeypatch):
+    """Forcing regeneration (clearing ref_image_url without clearing
+    character_appearance) must not let the stale saved text describe the
+    brand new image: fresh image, fresh words."""
+    import orchestrator
+    monkeypatch.setattr(
+        orchestrator, "_preset",
+        replace(orchestrator._preset, serialized_canon=False, default_ref_image=None),
+    )
+    seen = {}
+    deps, _ = _deps(
+        [_row(story_brief="b", status="pending", character_appearance="STALE SAVED SENTINEL")],
+        script=FakeGenerator({**SCRIPT_RESULT, "character_image_prompt": "FRESH SENTINEL"}),
+        image_generator=FakeImageGenerator(),
+        storyboards=lambda shots, ref, **kw: seen.update(kw) or [None] * len(shots),
+        chained_storyboards=_explodes("the chained storyboard supplier"),
+    )
+
+    run_pipeline(deps)
+
+    assert seen["appearance"] == "FRESH SENTINEL"

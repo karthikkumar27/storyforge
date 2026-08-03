@@ -348,6 +348,25 @@ def test_record_without_character_appearance_leaves_the_cell_untouched():
     assert records[0]["character_appearance"] == "original"
 
 
+def test_record_adds_the_character_appearance_column_on_a_sheet_that_lacks_it():
+    """A hand-added pending row on a sheet whose header predates this column
+    must not error out of the run -- record() ensures the column exists
+    before staging, the same way _append_pending already does for
+    arc_number/episode_number/character_form."""
+    raw = CountingSheet(
+        [{"story_brief": "b", "status": "pending"}],
+        headers=["story_brief", "status"],
+    )
+    ledger = EpisodeLedger(SheetTab(raw), SERIES_SPEC)
+
+    ledger.record(2, character_appearance="A locked paragraph")
+    ledger.record(2, status="uploading")
+
+    headers, records = raw.read_all()
+    assert "character_appearance" in headers
+    assert records[0]["character_appearance"] == "A locked paragraph"
+
+
 def test_finish_publishes_immediately():
     ledger, raw = _ledger([_row(story_brief="b", status="pending")])
 

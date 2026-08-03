@@ -251,7 +251,12 @@ def run_pipeline(deps: Deps | None = None) -> dict:
             else:
                 print(f"[Pipeline] Preset-7 character_form={form} but no locked ref image yet — will generate fresh", flush=True)
 
-        # Reuse reference image from Part 1 if this is a series continuation (other presets)
+        # Reuse reference image from Part 1 if this is a series continuation
+        # (other presets). The words that describe that image live on the
+        # SAME earlier, completed row — not the current, still-pending one —
+        # so they travel together into `series_appearance` and feed the
+        # priority chain below as this run's saved value.
+        series_appearance: str | None = None
         if not ref_image_url and STORY_MODE == "series":
             series_id = ledger.latest_incomplete_series()
             if series_id:
@@ -260,6 +265,7 @@ def run_pipeline(deps: Deps | None = None) -> dict:
                     url = part.get("ref_image_url", "")
                     if url:
                         ref_image_url = url
+                        series_appearance = str(part.get("character_appearance", "")).strip() or None
                         print(f"[Pipeline] Reusing reference image from Part {part.get('part_number', '?')}", flush=True)
                         break
 
@@ -308,19 +314,21 @@ def run_pipeline(deps: Deps | None = None) -> dict:
         # The locked appearance, in words. The reference image alone loses the
         # costume: the edit prompt describes the scene richly and the character
         # only in pixels, and the model resolves that conflict toward the text.
-        # Priority: the canon locked paragraph (form-aware, beats everything);
-        # else this episode's saved character_appearance, which by
-        # construction matches whatever ref_image_url is already on this row;
-        # else the prompt that generated a reference image THIS run — never
-        # a fresh prompt paired with an image an earlier, non-deterministic
-        # run saved.
+        # The rule is one sentence: use the words that describe the image
+        # actually in hand. Priority: the canon locked paragraph (form-aware,
+        # beats everything); else, if THIS run generated the reference image,
+        # the prompt that produced it — a fresh image always gets fresh
+        # words, never a saved description of a different, earlier image;
+        # else the appearance saved alongside whatever image IS in hand — the
+        # series part's, when the image was reused from an earlier part,
+        # otherwise this row's own saved value.
         appearance: str | None = None
         if _preset.serialized_canon:
             appearance = chars.get_main_appearance_for_form(form)
-        if not appearance:
-            appearance = str(episode.character_appearance).strip() or None
         if not appearance and image_generated_this_run:
             appearance = char_prompt
+        if not appearance:
+            appearance = series_appearance or (str(episode.character_appearance).strip() or None)
 
         storyboard_urls: list[str | None] | None = None
         storyboard_supplier = None

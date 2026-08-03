@@ -218,11 +218,13 @@ def main():
     else:
         print("\n[2/4] Using existing ref_image_url from sheet")
 
-    # The locked appearance passed to the storyboard builders below.
-    # Priority: the sheet's saved pairing, which matches ref_image_url by
-    # construction; else the prompt that generated a reference image THIS
-    # run; else nothing.
-    appearance = saved_appearance or (char_prompt if image_generated_this_run else None)
+    # The locked appearance passed to the storyboard builders below. The rule
+    # is one sentence: use the words that describe the image actually in
+    # hand. Priority: if THIS run generated the reference image, its prompt
+    # -- a fresh image always gets fresh words; else the sheet's saved
+    # pairing, which matches the reused ref_image_url by construction; else
+    # nothing.
+    appearance = char_prompt if image_generated_this_run else (saved_appearance or None)
 
     # ===== 3. Per-shot storyboards (optional) =====
     storyboard_urls = None

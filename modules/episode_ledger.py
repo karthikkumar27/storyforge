@@ -152,6 +152,11 @@ class EpisodeLedger:
             values[_WRITE_COLUMNS["status"]] = status
         if not values:
             return
+        # A hand-added row can predate a column this release introduced (e.g.
+        # character_appearance). ensure_columns is idempotent and reads from
+        # the cached header row, so this costs nothing on sheets that already
+        # have every column.
+        self._tab.ensure_columns(*_WRITE_COLUMNS.values())
         self._tab.stage(row_index, values)
         if status is not None:
             self._tab.flush()
