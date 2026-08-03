@@ -242,3 +242,80 @@ def test_separate_sessions_do_not_share_a_snapshot(configured):
     CharactersReader(SheetSession(opener=opener)).get_all_characters()
 
     assert raw.reads == 2
+
+
+# -- locked appearance, form-aware --------------------------------------------
+
+def test_appearance_form_selection_mirrors_the_ref_image_logic(configured):
+    """The same episode's character_form already picks the image; it must pick
+    the matching words, or the prompt describes Alan while the image shows
+    Zenith."""
+    session, _ = _session([ALAN])
+    reader = CharactersReader(session)
+
+    assert reader.get_main_appearance_for_form("normal").startswith("Late 30s")
+    assert reader.get_main_appearance_for_form("transformed").startswith("Crystalline")
+    assert reader.get_main_appearance_for_form("both").startswith("Crystalline")
+    assert reader.get_main_appearance_for_form("").startswith("Late 30s")
+
+
+def test_appearance_selection_matches_ref_image_selection_for_every_form(configured):
+    """Pins the mirror explicitly: whichever form picks the transformed IMAGE
+    must pick the transformed WORDS."""
+    session, _ = _session([ALAN])
+    reader = CharactersReader(session)
+
+    for form in ("normal", "transformed", "both", "", "nonsense"):
+        image_is_transformed = (
+            reader.get_main_ref_image_for_form(form) == "https://img/zenith.png"
+        )
+        words_are_transformed = reader.get_main_appearance_for_form(form).startswith(
+            "Crystalline"
+        )
+        assert image_is_transformed == words_are_transformed, form
+
+
+def test_appearance_falls_back_when_the_requested_form_is_empty(configured):
+    session, _ = _session([_char(
+        character_name="Alan Vorne", role="main",
+        appearance_normal="Late 30s, dark coat.",
+        appearance_transformed="",
+    )])
+
+    assert CharactersReader(session).get_main_appearance_for_form(
+        "transformed"
+    ).startswith("Late 30s")
+
+
+def test_appearance_falls_back_the_other_direction_too(configured):
+    session, _ = _session([_char(
+        character_name="Alan Vorne", role="main",
+        appearance_normal="",
+        appearance_transformed="Crystalline plates.",
+    )])
+
+    assert CharactersReader(session).get_main_appearance_for_form(
+        "normal"
+    ).startswith("Crystalline")
+
+
+def test_no_appearance_anywhere_returns_none(configured):
+    session, _ = _session([_char(
+        character_name="Alan Vorne", role="main",
+        appearance_normal="", appearance_transformed="",
+    )])
+
+    assert CharactersReader(session).get_main_appearance_for_form("normal") is None
+
+
+def test_no_main_character_returns_none(configured):
+    session, _ = _session([MIRA])   # role="ally", not "main"
+
+    assert CharactersReader(session).get_main_appearance_for_form("normal") is None
+
+
+def test_appearance_is_none_when_the_sheet_is_not_configured(monkeypatch):
+    """Mirrors the existing no-op guarantee for get_main_ref_image_for_form."""
+    monkeypatch.delenv(ENV_VAR, raising=False)
+
+    assert CharactersReader().get_main_appearance_for_form("normal") is None
