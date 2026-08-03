@@ -362,11 +362,20 @@ def test_appearance_absent_leaves_the_present_prompt_byte_identical():
 
 
 def test_appearance_absent_leaves_the_continuity_prompt_byte_identical():
-    before = build_continuity_prompt("Kenji lunges forward", "anime")
-    after = build_continuity_prompt("Kenji lunges forward", "anime", None)
-
-    assert before == after
-    assert "always looks exactly like this" not in before
+    """The regression guard for all five storyboard presets."""
+    expected = (
+        "You are given two images. The FIRST image is the authority on WHO the "
+        "character is — preserve their face, hair, eye colour, outfit and the anime "
+        "style from it exactly. The SECOND image is the final moment of the previous "
+        "shot — use it for continuity of lighting, weather, wardrobe state and where "
+        "other characters are standing, and keep any second character looking exactly "
+        "as they do there. Where the two images disagree about the main character's "
+        "appearance, the FIRST image wins. Render this scene as a 9:16 vertical still "
+        "frame at the START of the action, no motion blur. Scene: Kenji lunges forward"
+    )
+    assert build_continuity_prompt("Kenji lunges forward", "anime") == expected
+    assert build_continuity_prompt("Kenji lunges forward", "anime", None) == expected
+    assert "always looks exactly like this" not in expected
 
 
 def test_appearance_is_pasted_verbatim_into_the_edit_prompt():
@@ -393,8 +402,25 @@ def test_the_appearance_block_comes_before_the_scene():
     assert prompt.index(APPEARANCE) < prompt.index("Use the reference image")
 
 
+def test_the_appearance_block_comes_before_the_scene_in_the_continuity_prompt():
+    """Same mechanism as the edit prompt: placement is what makes the override
+    work, so the continuity builder needs it too, not just the edit builder."""
+    prompt = build_continuity_prompt("Sora wades forward", "anime", APPEARANCE)
+
+    assert prompt.index(APPEARANCE) < prompt.index("Scene:")
+    assert prompt.index(APPEARANCE) < prompt.index("You are given two images")
+
+
 def test_the_appearance_block_asserts_authority_over_the_scene():
     prompt = build_edit_prompt("Sora wades forward", "anime", APPEARANCE)
+    lowered = prompt.lower()
+
+    assert "authority" in lowered
+    assert "does not change how the character looks" in lowered
+
+
+def test_the_appearance_block_asserts_authority_over_the_scene_in_the_continuity_prompt():
+    prompt = build_continuity_prompt("Sora wades forward", "anime", APPEARANCE)
     lowered = prompt.lower()
 
     assert "authority" in lowered
@@ -415,3 +441,10 @@ def test_an_empty_appearance_is_treated_as_absent():
         assert build_edit_prompt("Sora wades", "anime", value) == build_edit_prompt(
             "Sora wades", "anime"
         )
+
+
+def test_an_empty_appearance_is_treated_as_absent_in_the_continuity_prompt():
+    for value in ("", "   "):
+        assert build_continuity_prompt(
+            "Sora wades", "anime", value
+        ) == build_continuity_prompt("Sora wades", "anime")
