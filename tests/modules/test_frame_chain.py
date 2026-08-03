@@ -228,3 +228,50 @@ def test_a_fetch_failure_falls_back_to_the_original_url(tmp_path):
         raise OSError("connection reset")
 
     assert portrait_anchor("https://cdn/sb.png", fetch=fetch) == "https://cdn/sb.png"
+
+
+# -- shrink_data_uri: the middle retry rung between a rejected inline anchor --
+# -- and giving up on chaining for the shot -----------------------------------
+
+def test_shrink_data_uri_downscales_an_oversized_anchor(tmp_path):
+    """The real path this exists for: a 1024px anchor gets rejected, and the
+    SAME storyboard comes back re-encoded at the smaller cap rather than
+    being abandoned."""
+    from modules.frame_chain import MAX_EDGE_PX, shrink_data_uri
+
+    wide = _solid(tmp_path / "wide.png", 1536, 1024)
+    oversized = to_data_uri(wide, max_edge=1024)
+
+    shrunk = shrink_data_uri(oversized, max_edge=MAX_EDGE_PX)
+
+    assert shrunk is not None
+    assert shrunk.startswith("data:image/png;base64,")
+    decoded = base64.b64decode(shrunk.split(",", 1)[1])
+    out = tmp_path / "shrunk.png"
+    out.write_bytes(decoded)
+    assert max(_probe_size(str(out))) == MAX_EDGE_PX
+
+
+def test_shrink_data_uri_returns_none_when_already_at_the_cap(tmp_path):
+    """No smaller variant available -- the caller treats None as "skip this
+    rung", not as a failure."""
+    from modules.frame_chain import shrink_data_uri
+
+    small = _solid(tmp_path / "small.png", 320, 400)
+    already_small = to_data_uri(small, max_edge=768)
+
+    assert shrink_data_uri(already_small) is None
+
+
+def test_shrink_data_uri_returns_none_for_a_non_data_uri():
+    from modules.frame_chain import shrink_data_uri
+
+    assert shrink_data_uri("https://cdn/sb.png") is None
+
+
+def test_shrink_data_uri_returns_none_for_corrupt_data_rather_than_raising():
+    """Sits on a failure path -- it must never turn a recoverable rejection
+    into a hard crash."""
+    from modules.frame_chain import shrink_data_uri
+
+    assert shrink_data_uri("data:image/png;base64,AAAA") is None

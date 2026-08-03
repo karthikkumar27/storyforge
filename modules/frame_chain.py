@@ -186,6 +186,48 @@ def normalise_portrait(image_path: str, *, ratio: float = PORTRAIT_RATIO) -> str
     return dest
 
 
+def shrink_data_uri(data_uri: str, *, max_edge: int = MAX_EDGE_PX) -> str | None:
+    """Re-encode a data: URI at a smaller cap, for the retry rung between a
+    rejected full-size inline anchor and giving up on chaining for the shot.
+
+    Same storyboard, softer encode: continuity survives even when the
+    original payload was too large for Atlas to accept.
+
+    Returns None -- "no smaller variant available" -- when the input is not
+    a data URI, is already at or below `max_edge`, or fails to decode. The
+    caller treats None as "skip this rung", not as a failure.
+
+    Never raises. This only ever runs after a submit already failed, and a
+    crash here would turn a recoverable rejection into a dead episode.
+    """
+    if not isinstance(data_uri, str) or not data_uri.startswith("data:"):
+        return None
+    try:
+        _, encoded = data_uri.split(",", 1)
+        raw = base64.b64decode(encoded)
+        tmp_dir = tempfile.mkdtemp(prefix="frame_chain_shrink_")
+        source_path = os.path.join(tmp_dir, "anchor.png")
+        with open(source_path, "wb") as handle:
+            handle.write(raw)
+
+        width, height = _probe_size(source_path)
+        if max(width, height) <= max_edge:
+            return None
+
+        before_kb = len(data_uri) // 1024
+        shrunk = to_data_uri(source_path, max_edge=max_edge)
+        after_kb = len(shrunk) // 1024
+        print(
+            f"[FrameChain] Shrunk anchor {before_kb}KB -> {after_kb}KB "
+            f"(max_edge={max_edge})",
+            flush=True,
+        )
+        return shrunk
+    except Exception as exc:
+        print(f"[FrameChain] Could not shrink anchor ({exc}) — skipping", flush=True)
+        return None
+
+
 def portrait_anchor(image_url: str, *, fetch: Any = None) -> str:
     """Return something Seedance can use as a 9:16 first frame.
 
