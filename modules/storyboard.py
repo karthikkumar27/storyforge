@@ -62,8 +62,37 @@ def character_is_absent(shot_prompt: str) -> bool:
     return any(marker in lowered for marker in CHARACTER_ABSENT_MARKERS)
 
 
-def build_edit_prompt(shot_prompt: str, style: str) -> str:
-    """The instruction handed to GPT Image 2 Edit for one shot."""
+def _appearance_block(appearance: str) -> str:
+    """The locked character description, stated as an overriding instruction.
+
+    This exists because of a measured failure: the edit prompt described the
+    scene in rich language and the character only in pixels, and probing
+    established that when the image and the text disagree, the TEXT wins. So the
+    character loses its costume to whatever the scene implies. Describing the
+    character in words too — first, and marked authoritative — puts it back on
+    equal footing.
+
+    Placement is load-bearing, not cosmetic: this goes ahead of the
+    reference-image and style instructions, not appended after the scene.
+    """
+    return (
+        f"THE CHARACTER ALWAYS LOOKS EXACTLY LIKE THIS, in every shot, regardless "
+        f"of what the scene describes: {appearance} "
+        f"This description is the AUTHORITY on the character's face, hair, clothing "
+        f"and accessories. The scene below says what happens and where — it does NOT "
+        f"change how the character looks. If the scene implies different clothing, "
+        f"ignore that and keep the description above. "
+    )
+
+
+def build_edit_prompt(
+    shot_prompt: str, style: str, appearance: str | None = None
+) -> str:
+    """The instruction handed to GPT Image 2 Edit for one shot.
+
+    `appearance` is the locked character description in words. It is omitted for
+    character-absent shots, where there is no character in frame to describe.
+    """
     if character_is_absent(shot_prompt):
         return (
             f"Use the reference image as a STYLE anchor only — preserve the {style} "
@@ -73,7 +102,9 @@ def build_edit_prompt(shot_prompt: str, style: str) -> str:
             f"prompt describes, as a 9:16 vertical still frame at the START of the action, "
             f"no motion blur. Scene: {shot_prompt}"
         )
+    lead = _appearance_block(appearance.strip()) if appearance and appearance.strip() else ""
     return (
+        f"{lead}"
         f"Use the reference image as the base — preserve the main character's face, "
         f"hair, outfit, and {style} style exactly. Render this scene as a 9:16 "
         f"vertical still frame at the START of the action, no motion blur. If the shot "
@@ -119,11 +150,15 @@ def build_storyboards(
     return storyboards
 
 
-def build_continuity_prompt(shot_prompt: str, style: str) -> str:
+def build_continuity_prompt(
+    shot_prompt: str, style: str, appearance: str | None = None
+) -> str:
     """The instruction for a two-base edit.
 
     Probing showed the model resolves conflicts toward the TEXT, so precedence
-    between the two images has to be stated rather than implied.
+    between the two images has to be stated rather than implied — and so the
+    locked appearance, when supplied, is stated in text rather than left to the
+    reference image's pixels.
     """
     if character_is_absent(shot_prompt):
         return (
@@ -135,7 +170,9 @@ def build_continuity_prompt(shot_prompt: str, style: str) -> str:
             f"environmental shot). Render the scene as a 9:16 vertical still frame at "
             f"the START of the action, no motion blur. Scene: {shot_prompt}"
         )
+    lead = _appearance_block(appearance.strip()) if appearance and appearance.strip() else ""
     return (
+        f"{lead}"
         f"You are given two images. The FIRST image is the authority on WHO the "
         f"character is — preserve their face, hair, eye colour, outfit and the {style} "
         f"style from it exactly. The SECOND image is the final moment of the previous "

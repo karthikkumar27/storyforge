@@ -338,3 +338,80 @@ def test_the_result_is_aspect_checked_before_it_is_returned(monkeypatch):
 
     assert seen == ["https://cdn/wide.png"]
     assert result == "data:image/png;base64,CROPPED"
+
+
+# -- appearance injection -----------------------------------------------------
+
+APPEARANCE = (
+    "A teenage Japanese girl, short black hair pushed back with a worn yellow "
+    "sweatband, oversized orange maintenance jumpsuit unzipped to the waist over "
+    "a white fitted shirt, black rubber work gloves, beat-up steel-toed boots."
+)
+
+
+def test_appearance_absent_leaves_the_present_prompt_byte_identical():
+    """The regression guard for all five storyboard presets."""
+    assert build_edit_prompt("Alan turns from the console", "anime") == (
+        "Use the reference image as the base — preserve the main character's face, "
+        "hair, outfit, and anime style exactly. Render this scene as a 9:16 "
+        "vertical still frame at the START of the action, no motion blur. If the shot "
+        "prompt explicitly names other characters or entities (a holographic AI "
+        "manifesting as light, another person, a creature), include them rendered "
+        "exactly as the shot prompt describes. Scene: Alan turns from the console"
+    )
+
+
+def test_appearance_absent_leaves_the_continuity_prompt_byte_identical():
+    before = build_continuity_prompt("Kenji lunges forward", "anime")
+    after = build_continuity_prompt("Kenji lunges forward", "anime", None)
+
+    assert before == after
+    assert "always looks exactly like this" not in before
+
+
+def test_appearance_is_pasted_verbatim_into_the_edit_prompt():
+    prompt = build_edit_prompt("Sora wades forward", "anime", APPEARANCE)
+
+    assert APPEARANCE in prompt
+    assert "Scene: Sora wades forward" in prompt
+
+
+def test_appearance_is_pasted_verbatim_into_the_continuity_prompt():
+    prompt = build_continuity_prompt("Sora wades forward", "anime", APPEARANCE)
+
+    assert APPEARANCE in prompt
+    assert "two images" in prompt          # the continuity wording survives
+    assert "Scene: Sora wades forward" in prompt
+
+
+def test_the_appearance_block_comes_before_the_scene():
+    """The defect is that scene language out-weighs the character. The remedy
+    depends on the character text being early and marked as overriding."""
+    prompt = build_edit_prompt("Sora wades forward", "anime", APPEARANCE)
+
+    assert prompt.index(APPEARANCE) < prompt.index("Scene:")
+    assert prompt.index(APPEARANCE) < prompt.index("Use the reference image")
+
+
+def test_the_appearance_block_asserts_authority_over_the_scene():
+    prompt = build_edit_prompt("Sora wades forward", "anime", APPEARANCE)
+    lowered = prompt.lower()
+
+    assert "authority" in lowered
+    assert "does not change how the character looks" in lowered
+
+
+def test_a_character_absent_shot_never_gets_the_appearance():
+    """POV and wide-exterior shots deliberately have no character in frame.
+    Describing one there is noise, and may coax the model into drawing them."""
+    for builder in (build_edit_prompt, build_continuity_prompt):
+        prompt = builder("POV shot — the altar cracks", "anime", APPEARANCE)
+        assert APPEARANCE not in prompt
+        assert "STYLE anchor only" in prompt or "STYLE anchor" in prompt
+
+
+def test_an_empty_appearance_is_treated_as_absent():
+    for value in ("", "   "):
+        assert build_edit_prompt("Sora wades", "anime", value) == build_edit_prompt(
+            "Sora wades", "anime"
+        )
